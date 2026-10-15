@@ -48,10 +48,12 @@ ziggy setup
 Setup asks one thing at a time:
 
 1. **The Pi's address**, such as `ziggy-kitchen.local`. It checks it can connect.
-2. **The player's name and sound quality.** Spotify shows the name when you pick where to play. Quality is 320 kbps unless you choose a lower setting to save data.
+2. **The player's name.** Spotify shows it when you pick where to play.
 3. **Spotify.**
-   - The first time, it walks you through creating a free Spotify developer app. One app serves every player and every person.
-   - Then a browser opens twice to sign in, once for playback and once for the library, and setup checks it all works.
+   - The first time, it asks for a Spotify Soloist API key, which plays the music on the Pi. Make one at the [Spotify developer dashboard](https://developer.spotify.com/dashboard) by choosing "Spotify Soloist API Key". Setup keeps it on your computer for every player after that.
+   - It also walks you through creating a free Spotify developer app, which loads the library. One app serves every player and every person.
+   - A browser opens to sign in for the library.
+   - Then sign in for playback: on a phone or computer on the same Wi-Fi, open the Spotify app as the person the player is for, tap the devices button and pick the player. The Spotify website can't find a new player, so use the app.
 4. **Extras.** An Audiobookshelf address and voice control, both optional.
 5. **Install.** It prepares the Pi, installs the newest player and copies your settings across. The first time takes a few minutes and restarts the Pi.
 
@@ -69,11 +71,11 @@ Run these from your computer:
 
 | Command | What it does |
 |---|---|
-| `ziggy config ziggy-kitchen.local` | Change settings from a menu: the name, sound quality, volume, screen timeouts, Audiobookshelf and voice. Saving restarts the player. |
+| `ziggy config ziggy-kitchen.local` | Change settings from a menu: the name, volume, screen timeouts, Audiobookshelf and voice. Saving restarts the player. |
 | `ziggy update ziggy-kitchen.local` | Install the newest player and restart it. |
 | `ziggy status ziggy-kitchen.local` | Check the player is running, and which version it is. |
 | `ziggy logs ziggy-kitchen.local` | Watch what the player is doing, for when something's wrong. |
-| `ziggy signin ziggy-kitchen.local` | Sign a different Spotify account in on that player. |
+| `ziggy signin ziggy-kitchen.local` | Sign a different Spotify account in on that player: the library in a browser, then playback by picking the player in the Spotify app. |
 
 `ziggy setup` can be run again on the same Pi at any time. It keeps the Spotify sign-in unless you choose to sign in again.
 
@@ -117,7 +119,7 @@ To change the wake word or its sensitivity, run `ziggy config`.
 ## For developers
 
 The code:
-- `crates/ziggy-player` is the touchscreen app, in Rust with [Slint](https://slint.dev). It uses librespot for playback and the Spotify Web API for the library.
+- `crates/ziggy-player` is the touchscreen app, in Rust with [Slint](https://slint.dev). It plays through [Spotify Soloist](https://developer.spotify.com/), which runs on the Pi, and uses the Spotify Web API for the library.
 - `crates/ziggy-setup` builds the `ziggy` tool.
 - `deploy/` holds what's installed on the Pi.
 - `docs/` holds the design specs and the [manual test checklists](docs/testing.md).
