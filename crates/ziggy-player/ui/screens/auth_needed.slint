@@ -14,10 +14,37 @@ export component AuthNeededScreen inherits Rectangle {
             horizontal-alignment: center;
         }
         Text {
-            text: "Sign this player in again from the Mac with ziggy-setup.";
+            text: "Sign this player in again from the Mac with ziggy signin.";
             font-size: Theme.font-body;
             color: Theme.text-dim;
             horizontal-alignment: center;
+        }
+    }
+}
+
+/// Shown until the player is signed in to Spotify, which happens by picking it in a Spotify app.
+export component PairScreen inherits Rectangle {
+    in property <string> device-name;
+    background: Theme.backdrop;
+    TouchArea {}
+    VerticalLayout {
+        alignment: center;
+        padding: 40px;
+        spacing: 16px;
+        Text {
+            text: "Pick “" + root.device-name + "” in Spotify";
+            font-size: 30px;
+            font-weight: 800;
+            color: Theme.text;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "On a phone or computer on this Wi-Fi, open the Spotify app, signed in as the person this player is for. Tap the devices button and choose “" + root.device-name + "”. Play anything, and this player signs in.";
+            font-size: Theme.font-body;
+            color: Theme.text-dim;
+            horizontal-alignment: center;
+            wrap: word-wrap;
         }
     }
 }

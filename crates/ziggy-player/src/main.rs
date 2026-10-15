@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use ziggy_player::config::Config;
-use ziggy_player::{AppWindow, runtime, ui_bridge};
 use slint::ComponentHandle;
 use tracing_subscriber::EnvFilter;
+use ziggy_player::config::Config;
+use ziggy_player::{AppWindow, runtime, ui_bridge};
 
 #[derive(Parser)]
 #[command(version, about = "Ziggy touchscreen Spotify player")]
@@ -19,14 +19,13 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    // librespot and reqwest pull in different rustls crypto backends, so pick one explicitly.
+    // Several crates bring rustls with different crypto backends, so pick one explicitly.
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow::anyhow!("rustls crypto provider already installed"))?;
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,librespot=warn")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
     let args = Args::parse();

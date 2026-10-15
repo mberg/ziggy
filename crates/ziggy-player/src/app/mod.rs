@@ -114,8 +114,8 @@ pub struct Core {
     listen_mark: Option<u64>,
     /// Spotify's recently-played list was asked for because the device has no history yet.
     asked_spotify_recent: bool,
-    /// When recent songs failed to load. librespot skips each one by itself, so without a limit
-    /// a refused account races through a whole playlist asking Spotify for every song.
+    /// When recent songs failed to load. The player skips each one by itself, so without a
+    /// limit a refused account races through a whole playlist asking Spotify for every song.
     failed_tracks_ms: Vec<u64>,
 }
 
@@ -145,6 +145,7 @@ impl Core {
             display: DisplayMode::Active,
             online: true,
             auth_needed: false,
+            pairing_needed: false,
             speaker_connected: true,
             account: None,
             search: Default::default(),
@@ -246,6 +247,7 @@ impl Core {
             Input::Voice(update) => self.on_voice(update, now_ms, &mut fx),
             Input::Temperature(c) => self.state.device.temperature_c = c,
             Input::Wifi(wifi) => self.state.device.wifi = wifi,
+            Input::PairingNeeded(needed) => self.state.pairing_needed = needed,
             Input::SonosRooms(rooms) => {
                 self.state.device.sonos_rooms = rooms;
                 self.state.device.sonos_scanning = false;
@@ -1752,7 +1754,7 @@ impl Core {
     /// A new song started: finish the last one's listening time and log the new one.
     fn log_track(&mut self, track: &Track, now_ms: u64, fx: &mut Vec<Effect>) {
         self.count_listening(now_ms);
-        // librespot can announce the same song twice as it loads; that's one play.
+        // The player can announce the same song twice as it loads; that's one play.
         if self.logged_uri.as_deref() == Some(track.uri.as_str()) && self.listened_ms < 5_000 {
             return;
         }

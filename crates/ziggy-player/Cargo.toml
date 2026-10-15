@@ -19,13 +19,12 @@ sherpa-onnx = "1.13.8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-librespot = { workspace = true }
+tokio-tungstenite = "0.28"
 ring = "0.17"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha1 = "0.10"
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-femtovg"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
@@ -35,13 +34,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 slint = { version = "1.18", default-features = false, features = ["backend-winit"] }
-librespot = { workspace = true, features = ["rodio-backend"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", features = ["bluetoothd"] }
 futures = "0.3"
 slint = { version = "1.18", default-features = false, features = ["backend-linuxkms-noseat"] }
-librespot = { workspace = true, features = ["alsa-backend"] }
 
 [build-dependencies]
 slint-build = "1.18"

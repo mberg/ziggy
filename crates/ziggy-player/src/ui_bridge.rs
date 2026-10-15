@@ -16,7 +16,8 @@ use crate::{
     TrackData,
 };
 
-const IMAGE_CACHE_LIMIT: usize = 80;
+/// Covers kept in memory, besides those on screen. At 160 px each is about 100 KB.
+const IMAGE_CACHE_LIMIT: usize = 48;
 
 struct Images {
     ready: HashMap<String, Image>,
@@ -139,6 +140,11 @@ pub fn publish(state: AppState) {
             b.render();
         });
     });
+}
+
+/// The big copy of a cover, for Now Playing and a book's page.
+fn large(url: &Option<String>) -> Option<String> {
+    url.as_ref().map(|u| format!("{}{u}", crate::images::LARGE))
 }
 
 /// Called from the image loader with a decoded cover.
@@ -367,7 +373,7 @@ impl Bridge {
             w.set_detail_artist_link(detail.artist_link);
         }
 
-        let art = self.images.get(&v.now.image_url);
+        let art = self.images.get(&large(&v.now.image_url));
         w.set_mini_visible(v.mini_visible);
         w.set_track_title(v.now.title.as_str().into());
         w.set_track_artists(v.now.artists.as_str().into());
@@ -394,6 +400,7 @@ impl Bridge {
         w.set_clock(chrono::Local::now().format("%-I:%M").to_string().into());
         w.set_show_clock(v.show_clock);
         w.set_auth_needed(v.auth_needed);
+        w.set_pairing_needed(v.pairing_needed);
 
         // Search rows and artist albums are built only while shown, so their covers are
         // requested only then.
@@ -419,7 +426,7 @@ impl Bridge {
             sync(&self.books_rows, rows);
         }
         if let Some(book) = &v.book {
-            let cover = self.images.get(&book.cover_url);
+            let cover = self.images.get(&large(&book.cover_url));
             w.set_book_title(book.title.as_str().into());
             w.set_book_author(book.author.as_str().into());
             w.set_book_narrator(book.narrator.as_str().into());

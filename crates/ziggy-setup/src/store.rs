@@ -17,6 +17,21 @@ pub struct Saved {
     pub vertex_key_file: Option<PathBuf>,
 }
 
+/// The Spotify Soloist API key, kept as a private file beside the saved choices. Spotify says
+/// the key is for the person who made it, so it's never shared or published.
+pub fn soloist_key_file() -> PathBuf {
+    home().join("soloist-api-key")
+}
+
+pub fn save_soloist_key(key: &str) -> anyhow::Result<PathBuf> {
+    let dir = home();
+    private_dir(&dir)?;
+    let path = soloist_key_file();
+    std::fs::write(&path, key.trim())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(path)
+}
+
 pub fn home() -> PathBuf {
     if let Some(dir) = std::env::var_os("ZIGGY_HOME") {
         return PathBuf::from(dir);

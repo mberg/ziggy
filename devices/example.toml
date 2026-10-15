@@ -1,15 +1,12 @@
 # Copy to devices/<kid>.toml and edit.
 device_name = "Ziggy"
 state_dir = "/var/lib/ziggy"
-audio_backend = "alsa"
-# Headphone jack:
-audio_device = "plughw:CARD=Headphones"
-# Bluetooth speaker instead (pair it first, see the Task 14 checklist):
-# audio_device = "bluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp"
+# Plays through the headphone jack, or a Bluetooth speaker paired in Settings:
 # bluetooth_speaker = "AA:BB:CC:DD:EE:FF"
 initial_volume = 60
-# Spotify stream quality in kbps: 96, 160 or 320 (the default).
-# bitrate = 320
+# The Spotify Soloist API key (from the Spotify for Developers dashboard) is read from
+# <state_dir>/soloist-api-key unless this says otherwise:
+# soloist_api_key_file = "/var/lib/ziggy/soloist-api-key"
 dim_after_secs = 180
 off_after_secs = 600
 # Audiobooks from an Audiobookshelf server turns Books on. Sign in from Settings on the player.

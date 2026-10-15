@@ -28,6 +28,8 @@ pub enum Input {
     Temperature(Option<i32>),
     /// The Wi-Fi connection; None when this computer doesn't report one.
     Wifi(Option<WifiStatus>),
+    /// The player isn't signed in to Spotify: it waits to be picked in a Spotify app.
+    PairingNeeded(bool),
 }
 
 /// The Wi-Fi connection, as Settings shows it.
@@ -321,7 +323,7 @@ pub enum PlayerUpdate {
     },
     Shuffle(bool),
     Repeat(Repeat),
-    /// librespot skips unavailable tracks itself; this only drives a notice.
+    /// A song couldn't play and was skipped; this only drives a notice.
     Unavailable,
 }
 

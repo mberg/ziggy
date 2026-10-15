@@ -108,7 +108,13 @@ pub fn parse_network(nmcli: &str) -> Option<(String, String)> {
             return None;
         }
         let mhz: u32 = freq.trim_end_matches(" MHz").trim().parse().ok()?;
-        let band = if mhz < 3000 { "2.4 GHz" } else if mhz < 5925 { "5 GHz" } else { "6 GHz" };
+        let band = if mhz < 3000 {
+            "2.4 GHz"
+        } else if mhz < 5925 {
+            "5 GHz"
+        } else {
+            "6 GHz"
+        };
         Some((ssid.clone(), band.to_string()))
     })
 }
@@ -159,7 +165,16 @@ pub fn spawn_wifi(inputs: tokio::sync::mpsc::UnboundedSender<Input>) {
         loop {
             // `--rescan no` reads NetworkManager's last scan; a scan would interrupt playback.
             let Ok(out) = tokio::process::Command::new("nmcli")
-                .args(["-t", "-f", "IN-USE,SSID,FREQ", "dev", "wifi", "list", "--rescan", "no"])
+                .args([
+                    "-t",
+                    "-f",
+                    "IN-USE,SSID,FREQ",
+                    "dev",
+                    "wifi",
+                    "list",
+                    "--rescan",
+                    "no",
+                ])
                 .output()
                 .await
             else {
@@ -282,7 +297,11 @@ mod tests {
             parse_network("*:Cafe\\: Guest:2437 MHz\n"),
             Some(("Cafe: Guest".into(), "2.4 GHz".into()))
         );
-        assert_eq!(parse_network(" :46Brewer:2422 MHz\n"), None, "nothing in use");
+        assert_eq!(
+            parse_network(" :46Brewer:2422 MHz\n"),
+            None,
+            "nothing in use"
+        );
     }
 
     #[test]
@@ -291,7 +310,11 @@ mod tests {
         assert_eq!(parse_signal(proc), Some(73));
         assert_eq!(parse_signal(&proc.replace("-56.", "-30.")), Some(100));
         assert_eq!(parse_signal(&proc.replace("-56.", "-95.")), Some(8));
-        assert_eq!(parse_signal(&proc.replace("-56.", "200.")), Some(73), "200 as a byte is -56 dBm");
+        assert_eq!(
+            parse_signal(&proc.replace("-56.", "200.")),
+            Some(73),
+            "200 as a byte is -56 dBm"
+        );
         assert_eq!(parse_signal("no wifi here"), None);
     }
 

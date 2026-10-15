@@ -13,7 +13,7 @@ console = "0.16"
 dialoguer = "0.12"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
-librespot = { workspace = true }
+librespot-oauth = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }

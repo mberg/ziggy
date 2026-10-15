@@ -4,10 +4,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use i_slint_backend_testing::ElementHandle;
-use ziggy_player::{AppWindow, ScreenKind, TileData};
 use slint::ComponentHandle;
 use slint::LogicalPosition;
 use slint::platform::{PointerEventButton, WindowEvent};
+use ziggy_player::{AppWindow, ScreenKind, TileData};
 
 fn visible_by_label(window: &AppWindow, label: &str) -> ElementHandle {
     let found: Vec<ElementHandle> =

@@ -1,55 +1,16 @@
-//! Spotify sign-in for a device: playback (librespot) and the library (the developer app).
+//! Spotify sign-in for a device's library, through the developer app. (Playback signs in on the
+//! Pi itself, when the player is picked in a Spotify app.)
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, anyhow, bail};
-use librespot::core::authentication::Credentials;
-use librespot::core::cache::Cache;
-use librespot::core::config::SessionConfig;
-use librespot::core::session::Session;
-use librespot::oauth::OAuthClientBuilder;
+use librespot_oauth::OAuthClientBuilder;
 
 pub const REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 /// Keep in sync with `crates/ziggy-player/src/library/web_api.rs`.
-const SCOPES: &str = "playlist-read-private,playlist-read-collaborative,user-library-read,user-read-recently-played,playlist-modify-private,playlist-modify-public,user-library-modify,user-follow-read,user-follow-modify";
+const SCOPES: &str = "playlist-read-private,playlist-read-collaborative,user-library-read,user-read-recently-played,playlist-modify-private,playlist-modify-public,user-library-modify,user-follow-read,user-follow-modify,user-read-playback-state,user-modify-playback-state";
 const API: &str = "https://api.spotify.com/v1";
-
-fn cache(state_dir: &Path) -> anyhow::Result<(PathBuf, Cache)> {
-    let dir = state_dir.join("librespot");
-    std::fs::create_dir_all(&dir)?;
-    let cache = Cache::new(Some(&dir), Some(&dir), None, None)?;
-    Ok((dir, cache))
-}
-
-pub async fn auth(state_dir: &Path) -> anyhow::Result<()> {
-    let session_config = SessionConfig::default();
-    let client_id = session_config.client_id.clone();
-    println!("Opening the Spotify sign-in page. Sign in with the account this device should use.");
-    let token = tokio::task::spawn_blocking(move || {
-        OAuthClientBuilder::new(&client_id, REDIRECT_URI, vec!["streaming"])
-            .open_in_browser()
-            .build()?
-            .get_access_token()
-    })
-    .await?
-    .map_err(|e| anyhow!("Spotify sign-in failed: {e}"))?;
-
-    let (dir, cache) = cache(state_dir)?;
-    let session = Session::new(session_config, Some(cache));
-    session
-        .connect(Credentials::with_access_token(token.access_token), true)
-        .await?;
-    let credentials = dir.join("credentials.json");
-    std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("restricting {}", credentials.display()))?;
-    println!(
-        "Signed in as {}. Saved {}",
-        session.username(),
-        credentials.display()
-    );
-    Ok(())
-}
 
 pub const WEB_AUTH_FILE: &str = "web-auth.json";
 
@@ -93,14 +54,6 @@ pub async fn auth_web(state_dir: &Path, client_id: &str) -> anyhow::Result<()> {
         }
     };
     println!("Library account: {name} ({id})");
-    if let Some(playback) = playback_account(state_dir)
-        && playback != id
-    {
-        println!(
-            "WARNING: playback is signed in as {playback}, but the library is {id}. \
-             Run `auth` and `auth-web` with the same Spotify account."
-        );
-    }
     Ok(())
 }
 
@@ -123,53 +76,27 @@ async fn account(access_token: &str) -> anyhow::Result<(String, String)> {
     Ok((id, name))
 }
 
-/// The username saved by `auth` for playback, if any.
-pub fn playback_account(state_dir: &Path) -> Option<String> {
-    let dir = state_dir.join("librespot");
-    if !dir.join("credentials.json").is_file() {
-        return None;
-    }
-    Cache::new(Some(&dir), None, None, None)
-        .ok()?
-        .credentials()?
-        .username
-}
-
-/// A Web API access token from the developer app when `web-auth.json` exists, else from the
-/// librespot session. Returns the token and a label for the final message.
+/// A Web API access token from the developer-app sign-in in `web-auth.json`.
 async fn access_token(state_dir: &Path) -> anyhow::Result<(String, &'static str)> {
     let web_auth = state_dir.join(WEB_AUTH_FILE);
-    if web_auth.is_file() {
-        let auth: WebAuth = serde_json::from_slice(&std::fs::read(&web_auth)?)
-            .with_context(|| format!("reading {}", web_auth.display()))?;
-        println!(
-            "Using developer app {} from {}",
-            auth.client_id,
-            web_auth.display()
-        );
-        let token = tokio::task::spawn_blocking(move || {
-            OAuthClientBuilder::new(&auth.client_id, REDIRECT_URI, SCOPES.split(',').collect())
-                .build()?
-                .refresh_token(&auth.refresh_token)
-        })
-        .await?
-        .map_err(|e| anyhow!("token refresh failed: {e}"))?;
-        return Ok((token.access_token, "developer-app tokens"));
+    if !web_auth.is_file() {
+        bail!("no library sign-in saved; sign in first");
     }
-
-    let (_, cache) = cache(state_dir)?;
-    let credentials = cache
-        .credentials()
-        .context("no saved credentials; sign in first")?;
-    let session = Session::new(SessionConfig::default(), Some(cache));
-    session.connect(credentials, true).await?;
-    println!("Connected as {}", session.username());
-    let token = session
-        .token_provider()
-        .get_token(SCOPES)
-        .await
-        .context("Spotify refused a Web API token for the librespot session; apply Contingency A (ziggy-setup auth-web)")?;
-    Ok((token.access_token, "librespot tokens"))
+    let auth: WebAuth = serde_json::from_slice(&std::fs::read(&web_auth)?)
+        .with_context(|| format!("reading {}", web_auth.display()))?;
+    println!(
+        "Using developer app {} from {}",
+        auth.client_id,
+        web_auth.display()
+    );
+    let token = tokio::task::spawn_blocking(move || {
+        OAuthClientBuilder::new(&auth.client_id, REDIRECT_URI, SCOPES.split(',').collect())
+            .build()?
+            .refresh_token(&auth.refresh_token)
+    })
+    .await?
+    .map_err(|e| anyhow!("token refresh failed: {e}"))?;
+    Ok((token.access_token, "developer-app tokens"))
 }
 
 pub async fn probe(state_dir: &Path) -> anyhow::Result<()> {
@@ -177,19 +104,7 @@ pub async fn probe(state_dir: &Path) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
 
     let (library_id, library_name) = account(&access_token).await?;
-    let playback = playback_account(state_dir);
-    println!("Library account:  {library_name} ({library_id})");
-    println!(
-        "Playback account: {}",
-        playback.as_deref().unwrap_or("none (run `auth`)")
-    );
-    let mismatch = playback.as_ref().is_some_and(|p| *p != library_id);
-    if mismatch {
-        println!(
-            "WARNING: the library and playback are signed in to different accounts. \
-             Run `auth` and `auth-web` with the same Spotify account."
-        );
-    }
+    println!("Library account: {library_name} ({library_id})");
 
     let get = |path: String| {
         let request = client
@@ -249,9 +164,6 @@ pub async fn probe(state_dir: &Path) -> anyhow::Result<()> {
         any_playlist_ok |= any_ok;
     }
     if !playlists.is_empty() && !any_playlist_ok {
-        failures += 1;
-    }
-    if mismatch {
         failures += 1;
     }
     if failures > 0 {

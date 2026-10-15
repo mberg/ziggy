@@ -91,27 +91,32 @@ pub fn install_wake_model(r: &dyn Remote) -> anyhow::Result<()> {
 
 /// The sign-ins and keys the player needs, from this computer's copy.
 pub struct Secrets<'a> {
-    /// Holds librespot/credentials.json and web-auth.json.
+    /// Holds the library sign-in, web-auth.json.
     pub spotify_dir: &'a Path,
+    /// The Spotify Soloist API key file.
+    pub soloist_key: Option<&'a Path>,
     pub vertex_key: Option<&'a Path>,
 }
 
+/// Where the player reads the Soloist API key (its default in the player's config).
+pub const SOLOIST_KEY_PATH: &str = "/var/lib/ziggy/soloist-api-key";
+/// The player pairs afresh on its next start when this exists.
+const PAIR_REQUEST: &str = "/var/lib/ziggy/soloist-pair";
+
 pub fn install_secrets(r: &dyn Remote, secrets: &Secrets) -> anyhow::Result<()> {
     let state = devconfig::STATE_DIR;
-    let files = [
-        (
-            secrets.spotify_dir.join("librespot/credentials.json"),
-            format!("{state}/librespot/credentials.json"),
-        ),
-        (
-            secrets.spotify_dir.join(crate::spotify::WEB_AUTH_FILE),
-            format!("{state}/{}", crate::spotify::WEB_AUTH_FILE),
-        ),
-    ];
-    for (from, to) in files {
-        if from.is_file() {
-            r.upload(&std::fs::read(&from)?, &to, "600", Some("ziggy-player"))?;
-        }
+    let web_auth = secrets.spotify_dir.join(crate::spotify::WEB_AUTH_FILE);
+    if web_auth.is_file() {
+        r.upload(
+            &std::fs::read(&web_auth)?,
+            &format!("{state}/{}", crate::spotify::WEB_AUTH_FILE),
+            "600",
+            Some("ziggy-player"),
+        )?;
+    }
+    if let Some(key) = secrets.soloist_key {
+        let bytes = std::fs::read(key).with_context(|| format!("reading {}", key.display()))?;
+        r.upload(&bytes, SOLOIST_KEY_PATH, "600", Some("ziggy-player"))?;
     }
     if let Some(key) = secrets.vertex_key {
         let bytes = std::fs::read(key).with_context(|| format!("reading {}", key.display()))?;
@@ -150,6 +155,19 @@ pub fn restart(r: &dyn Remote) -> anyhow::Result<(bool, String)> {
     ))
 }
 
+/// Installs the player's systemd unit as this version of `ziggy` has it, so an update also
+/// brings changes to how the service runs.
+pub fn install_service(r: &dyn Remote) -> anyhow::Result<()> {
+    r.upload(
+        SERVICE.as_bytes(),
+        "/etc/systemd/system/ziggy-player.service",
+        "644",
+        None,
+    )?;
+    r.run("sudo systemctl daemon-reload")?;
+    Ok(())
+}
+
 /// Keeps the Pi's logs across reboots (capped), so a crash can be read afterwards. Safe to run
 /// again; the same settings are in the provisioning script.
 pub fn keep_logs(r: &dyn Remote) -> anyhow::Result<()> {
@@ -164,8 +182,7 @@ pub fn keep_logs(r: &dyn Remote) -> anyhow::Result<()> {
 }
 
 /// Lets the player's service user shut the Pi down (the Turn off button), and nothing else.
-pub const POWER_SUDOERS: &str =
-    "# Ziggy: the Turn off button in Settings.\nziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n";
+pub const POWER_SUDOERS: &str = "# Ziggy: the Turn off button in Settings.\nziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n";
 
 /// Installs the sudo rule for Turn off, checked with visudo first. Safe to run again.
 pub fn allow_power_off(r: &dyn Remote) -> anyhow::Result<()> {
@@ -240,7 +257,9 @@ impl Health {
         let bits = self.throttle_bits();
         let mut out = Vec::new();
         if bits & 0x10001 != 0 {
-            out.push("The Pi has had too little power (under-voltage). Check the cable and charger.");
+            out.push(
+                "The Pi has had too little power (under-voltage). Check the cable and charger.",
+            );
         }
         if bits & 0xE000E != 0 {
             out.push("The Pi touched its 60°C heat limit and eased off for a moment. That's normal under load; look at airflow only if it keeps happening.");
@@ -253,6 +272,47 @@ impl Health {
             .and_then(|n| n.parse().ok())
             .unwrap_or(0)
     }
+}
+
+/// The name Spotify shows for the player: one set on the touchscreen wins over the config.
+pub fn device_name(r: &dyn Remote) -> Option<String> {
+    let on_screen = r
+        .run("sudo cat /var/lib/ziggy/settings.json 2>/dev/null || true")
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|v| v["device_name"].as_str().map(str::to_string))
+        .filter(|n| !n.trim().is_empty());
+    on_screen.or_else(|| {
+        read_config(r).ok().flatten().and_then(|t| {
+            t.get("device_name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+    })
+}
+
+/// Asks the player to forget its Spotify sign-in and wait to be picked in a Spotify app the
+/// next time it starts.
+pub fn request_pairing(r: &dyn Remote) -> anyhow::Result<()> {
+    r.upload(b"", PAIR_REQUEST, "600", Some("ziggy-player"))
+}
+
+/// True once the player's Soloist is signed in to Spotify.
+pub fn is_paired(r: &dyn Remote) -> bool {
+    r.run(
+        "sudo -u ziggy-player /var/lib/ziggy/bin/soloist ctl -w 127.0.0.1:47321 status \
+           2>/dev/null | grep -q 'logged in: yes' && echo PAIRED || true",
+    )
+    .is_ok_and(|out| out.contains("PAIRED"))
+}
+
+/// True for a player from before Soloist: BlueALSA instead of PipeWire, or no API key yet.
+pub fn needs_soloist_migration(r: &dyn Remote) -> bool {
+    r.run(&format!(
+        "if ! command -v pw-dump >/dev/null || systemctl is-enabled bluealsa >/dev/null 2>&1 \
+           || ! sudo test -s {SOLOIST_KEY_PATH}; then echo MIGRATE; fi"
+    ))
+    .is_ok_and(|out| out.contains("MIGRATE"))
 }
 
 /// True for a player set up before the rename to Ziggy, which still has the muzak names.
@@ -268,9 +328,9 @@ pub fn installed_version(r: &dyn Remote) -> Option<String> {
         "/usr/local/bin/ziggy-player --version 2>/dev/null \
          || /usr/local/bin/muzak-player --version 2>/dev/null || true",
     )
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -315,6 +375,15 @@ mod tests {
     }
 
     #[test]
+    fn the_name_set_on_the_screen_wins() {
+        let r = FakeRemote {
+            output: r#"{"device_name": "Ellie's Ziggy", "output": "Jack"}"#.into(),
+            ..Default::default()
+        };
+        assert_eq!(device_name(&r).as_deref(), Some("Ellie's Ziggy"));
+    }
+
+    #[test]
     fn turn_off_is_the_only_thing_the_player_may_sudo() {
         let r = FakeRemote::default();
         allow_power_off(&r).unwrap();
@@ -351,9 +420,9 @@ mod tests {
     #[test]
     fn secrets_go_to_the_ziggy_user_only() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("librespot")).unwrap();
-        std::fs::write(dir.path().join("librespot/credentials.json"), "{}").unwrap();
         std::fs::write(dir.path().join("web-auth.json"), "{}").unwrap();
+        let soloist = dir.path().join("soloist-api-key");
+        std::fs::write(&soloist, "spak_x").unwrap();
         let key = dir.path().join("vertex.json");
         std::fs::write(&key, "{\"type\":\"service_account\"}").unwrap();
         let r = FakeRemote::default();
@@ -361,12 +430,13 @@ mod tests {
             &r,
             &Secrets {
                 spotify_dir: dir.path(),
+                soloist_key: Some(&soloist),
                 vertex_key: Some(&key),
             },
         )
         .unwrap();
         for path in [
-            "/var/lib/ziggy/librespot/credentials.json",
+            "/var/lib/ziggy/soloist-api-key",
             "/var/lib/ziggy/web-auth.json",
             "/var/lib/ziggy/vertex-key.json",
         ] {
@@ -385,7 +455,6 @@ mod tests {
         let r = FakeRemote::default();
         let mut t = devconfig::new_config(&devconfig::Choices {
             device_name: "Den".into(),
-            bitrate: 320,
             audiobookshelf_url: None,
             voice: None,
         });

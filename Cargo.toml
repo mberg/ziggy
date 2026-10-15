@@ -6,9 +6,6 @@ members = ["crates/ziggy-player", "crates/ziggy-setup"]
 version = "0.2.3"
 edition = "2024"
 
-[workspace.dependencies]
-librespot = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
-
 [profile.release]
 # Smaller downloads for the Pi (about 62 MB instead of 84 MB, 26 MB compressed).
 strip = true

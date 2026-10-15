@@ -430,6 +430,8 @@ pub struct View {
     /// The dim screen shows a clock, except while falling asleep to a sleep timer.
     pub show_clock: bool,
     pub auth_needed: bool,
+    /// The player waits to be picked in a Spotify app; the screen says how, by its name.
+    pub pairing_needed: bool,
     pub search: SearchView,
     pub artist: Option<ArtistView>,
     pub picker: Option<PickerView>,
@@ -513,6 +515,7 @@ pub fn build(state: &AppState) -> View {
         display: state.display,
         show_clock: state.sleep_ends_ms.is_none(),
         auth_needed: state.auth_needed,
+        pairing_needed: state.pairing_needed,
         search: search(state),
         artist: artist(state),
         picker: state.picker.as_ref().map(|_| PickerView {
@@ -1064,9 +1067,9 @@ fn banner(state: &AppState) -> Option<String> {
     match &state.notice {
         Some(Notice::NoInternet) => Some("No internet right now".into()),
         Some(Notice::TrackUnavailable) => Some("That song can't play, skipping".into()),
-        Some(Notice::SkippingStopped) => {
-            Some("Spotify won't play these songs right now, so Ziggy stopped. Try again later.".into())
-        }
+        Some(Notice::SkippingStopped) => Some(
+            "Spotify won't play these songs right now, so Ziggy stopped. Try again later.".into(),
+        ),
         Some(Notice::CouldntSave) => Some("Couldn't save that".into()),
         Some(Notice::SpotifyBusy) => {
             Some("Spotify is limiting changes right now. Try again later.".into())

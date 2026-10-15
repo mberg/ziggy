@@ -56,7 +56,9 @@ impl Throttle {
     }
 
     fn due(&mut self, now: Instant) -> bool {
-        let due = self.last.is_none_or(|t| now.duration_since(t) >= self.every);
+        let due = self
+            .last
+            .is_none_or(|t| now.duration_since(t) >= self.every);
         if due {
             self.last = Some(now);
         }

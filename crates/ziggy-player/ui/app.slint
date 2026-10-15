@@ -10,7 +10,7 @@ import { GridScreen } from "screens/grid.slint";
 import { DetailScreen } from "screens/detail.slint";
 import { NowPlayingScreen } from "screens/now_playing.slint";
 import { IdleOverlay } from "screens/idle.slint";
-import { AuthNeededScreen } from "screens/auth_needed.slint";
+import { AuthNeededScreen, PairScreen } from "screens/auth_needed.slint";
 import { SearchScreen } from "screens/search.slint";
 import { ArtistScreen } from "screens/artist.slint";
 import { Keyboard } from "components/keyboard.slint";
@@ -63,6 +63,7 @@ export component AppWindow inherits Window {
     in property <string> clock;
     in property <bool> show-clock;
     in property <bool> auth-needed;
+    in property <bool> pairing-needed;
     in property <string> account-name;
     in property <string> account-id;
     in property <string> device-name;
@@ -497,6 +498,13 @@ export component AppWindow inherits Window {
         y: root.height - self.height - 16px;
         text: root.voice-status;
         listening: root.voice-listening;
+    }
+    if root.pairing-needed && !root.auth-needed: PairScreen {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        device-name: root.device-name;
     }
     if root.auth-needed: AuthNeededScreen {
         x: 0;

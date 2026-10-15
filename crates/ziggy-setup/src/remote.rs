@@ -172,11 +172,17 @@ mod upload_tests {
         let script = upload_script("/usr/local/bin/ziggy-player", "755", None);
         let write = script.find("install -D -m 755 /dev/stdin '/usr/local/bin/ziggy-player.new'");
         let save = script.find("sync '/usr/local/bin/ziggy-player.new'");
-        let swap = script.find("mv -f '/usr/local/bin/ziggy-player.new' '/usr/local/bin/ziggy-player'");
-        assert!(write.is_some() && save.is_some() && swap.is_some(), "{script}");
+        let swap =
+            script.find("mv -f '/usr/local/bin/ziggy-player.new' '/usr/local/bin/ziggy-player'");
+        assert!(
+            write.is_some() && save.is_some() && swap.is_some(),
+            "{script}"
+        );
         assert!(write < save && save < swap, "{script}");
-        assert!(upload_script("/var/lib/ziggy/web-auth.json", "600", Some("ziggy-player"))
-            .contains("-o ziggy-player -g ziggy-player /dev/stdin"));
+        assert!(
+            upload_script("/var/lib/ziggy/web-auth.json", "600", Some("ziggy-player"))
+                .contains("-o ziggy-player -g ziggy-player /dev/stdin")
+        );
     }
 }
 

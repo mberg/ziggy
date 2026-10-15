@@ -17,7 +17,7 @@ use crate::model::{
 
 pub const API_BASE: &str = "https://api.spotify.com/v1";
 /// Keep in sync with `crates/ziggy-setup/src/main.rs`.
-pub const SCOPES: &str = "playlist-read-private,playlist-read-collaborative,user-library-read,user-read-recently-played,playlist-modify-private,playlist-modify-public,user-library-modify,user-follow-read,user-follow-modify";
+pub const SCOPES: &str = "playlist-read-private,playlist-read-collaborative,user-library-read,user-read-recently-played,playlist-modify-private,playlist-modify-public,user-library-modify,user-follow-read,user-follow-modify,user-read-playback-state,user-modify-playback-state";
 const MAX_ITEMS: usize = 500;
 const RECENT_LIMIT: usize = 20;
 /// Spotify answers "Invalid limit" above 10 per type (checked 2026-10-03).
@@ -472,6 +472,13 @@ fn decode<D: DeserializeOwned>(value: Value) -> Result<D, FetchError> {
         .map_err(|e| FetchError::Other(format!("unexpected response: {e}")))
 }
 
+/// Where a list should start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StartAt {
+    Uri(String),
+    Position(u32),
+}
+
 // ---- Client ----
 
 pub struct WebApi<H, T> {
@@ -666,6 +673,36 @@ impl<H: Http, T: TokenSource> WebApi<H, T> {
                 Err(HttpError::Decode(e)) => return Err(FetchError::Other(e)),
             }
         }
+    }
+
+    /// The Web API's ID for the Spotify Connect device called `name`, if Spotify lists it.
+    pub async fn device_id(&self, name: &str) -> Result<Option<String>, FetchError> {
+        let devices = self.get("/me/player/devices").await?;
+        Ok(devices["devices"].as_array().and_then(|list| {
+            list.iter()
+                .find(|d| d["name"].as_str() == Some(name))
+                .and_then(|d| d["id"].as_str().map(str::to_string))
+        }))
+    }
+
+    /// Starts a list on a device at one of its songs, by the song's URI or its position.
+    pub async fn play_from(
+        &self,
+        device_id: &str,
+        context_uri: &str,
+        start: &StartAt,
+    ) -> Result<(), FetchError> {
+        let offset = match start {
+            StartAt::Uri(uri) => json!({ "uri": uri }),
+            StartAt::Position(i) => json!({ "position": i }),
+        };
+        self.send(
+            Method::Put,
+            &format!("/me/player/play?device_id={device_id}"),
+            Some(json!({ "context_uri": context_uri, "offset": offset, "position_ms": 0 })),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn pages<I: DeserializeOwned>(&self, first: &str) -> Result<Vec<I>, FetchError> {

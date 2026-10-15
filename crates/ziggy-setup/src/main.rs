@@ -61,14 +61,8 @@ enum Command {
     Status { host: String },
     /// Show a player's log as it happens.
     Logs { host: String },
-    /// Sign a Spotify account in on a player again.
+    /// Sign a Spotify account in on a player again: the library, then pairing from a phone.
     Signin { host: String },
-    /// Advanced: sign in for playback into a folder.
-    #[command(hide = true)]
-    Auth {
-        #[arg(long)]
-        state_dir: PathBuf,
-    },
     /// Advanced: sign in through the developer app into a folder.
     #[command(hide = true)]
     AuthWeb {
@@ -87,7 +81,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // librespot and reqwest pull in different rustls crypto backends, so pick one explicitly.
+    // The OAuth and HTTP crates bring rustls with different crypto backends; pick one.
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow!("rustls crypto provider already installed"))?;
@@ -104,7 +98,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Status { host } => wizard::status(&host),
         Command::Logs { host } => wizard::logs(&host),
         Command::Signin { host } => wizard::signin(&host).await,
-        Command::Auth { state_dir } => spotify::auth(&state_dir).await,
         Command::AuthWeb {
             state_dir,
             client_id,

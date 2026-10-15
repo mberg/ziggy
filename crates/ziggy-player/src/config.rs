@@ -9,12 +9,15 @@ use serde::Deserialize;
 pub struct Config {
     /// Shown as the Spotify Connect device name.
     pub device_name: String,
-    /// librespot audio backend: "alsa" on the Pi, "rodio" on the Mac.
-    #[serde(default = "default_audio_backend")]
-    pub audio_backend: String,
-    /// ALSA device, e.g. "plughw:CARD=Headphones" or "bluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp".
+    /// No longer used (librespot's audio output); still accepted in older configs.
+    #[serde(default)]
+    pub audio_backend: Option<String>,
+    /// No longer used (librespot's ALSA device); still accepted in older configs.
     #[serde(default)]
     pub audio_device: Option<String>,
+    /// A file holding the Spotify Soloist API key; `<state_dir>/soloist-api-key` by default.
+    #[serde(default)]
+    pub soloist_api_key_file: Option<PathBuf>,
     pub state_dir: PathBuf,
     #[serde(default = "default_dim_after_secs")]
     pub dim_after_secs: u64,
@@ -25,9 +28,9 @@ pub struct Config {
     /// Bluetooth speaker address to watch and reconnect.
     #[serde(default)]
     pub bluetooth_speaker: Option<String>,
-    /// Spotify stream quality in kbps: 96, 160 or 320 (the default).
-    #[serde(default = "default_bitrate")]
-    pub bitrate: u16,
+    /// No longer used: Soloist picks the stream quality. Still accepted in older configs.
+    #[serde(default)]
+    pub bitrate: Option<u16>,
     /// Audiobookshelf server, e.g. "http://nas.local:13378". Turns Books on.
     #[serde(default)]
     pub audiobookshelf_url: Option<String>,
@@ -58,22 +61,11 @@ pub struct Config {
     pub gemini_model: Option<String>,
 }
 
-fn default_audio_backend() -> String {
-    if cfg!(target_os = "linux") {
-        "alsa"
-    } else {
-        "rodio"
-    }
-    .to_string()
-}
 fn default_dim_after_secs() -> u64 {
     180
 }
 fn default_off_after_secs() -> u64 {
     600
-}
-fn default_bitrate() -> u16 {
-    320
 }
 fn default_initial_volume() -> u8 {
     50
@@ -94,18 +86,16 @@ impl Config {
         );
         ensure!(config.initial_volume <= 100, "initial_volume must be 0-100");
         ensure!(
-            [96, 160, 320].contains(&config.bitrate),
-            "bitrate must be 96, 160 or 320"
-        );
-        ensure!(
             config.off_after_secs > config.dim_after_secs,
             "off_after_secs must be greater than dim_after_secs"
         );
         Ok(config)
     }
 
-    pub fn librespot_dir(&self) -> PathBuf {
-        self.state_dir.join("librespot")
+    pub fn soloist_api_key_file(&self) -> PathBuf {
+        self.soloist_api_key_file
+            .clone()
+            .unwrap_or_else(|| self.state_dir.join("soloist-api-key"))
     }
 
     pub fn cache_dir(&self) -> PathBuf {
@@ -130,7 +120,10 @@ mod tests {
         assert_eq!(c.off_after_secs, 600);
         assert_eq!(c.audio_device, None);
         assert_eq!(c.bluetooth_speaker, None);
-        assert_eq!(c.librespot_dir(), PathBuf::from("/var/lib/ziggy/librespot"));
+        assert_eq!(
+            c.soloist_api_key_file(),
+            PathBuf::from("/var/lib/ziggy/soloist-api-key")
+        );
         assert_eq!(c.cache_dir(), PathBuf::from("/var/lib/ziggy/cache"));
         assert_eq!(c.images_dir(), PathBuf::from("/var/lib/ziggy/images"));
     }
@@ -158,20 +151,13 @@ mod tests {
     #[test]
     fn example_device_config_parses() {
         let text = include_str!("../../../devices/example.toml");
-        let c = Config::parse(text).unwrap();
-        assert_eq!(c.audio_device.as_deref(), Some("plughw:CARD=Headphones"));
+        Config::parse(text).unwrap();
     }
 
     #[test]
-    fn stream_quality_defaults_to_the_highest_and_is_checked() {
-        let base = "device_name = \"Den\"\nstate_dir = \"/x\"\n";
-        assert_eq!(Config::parse(base).unwrap().bitrate, 320);
-        assert_eq!(
-            Config::parse(&format!("{base}bitrate = 160\n"))
-                .unwrap()
-                .bitrate,
-            160
-        );
-        assert!(Config::parse(&format!("{base}bitrate = 256\n")).is_err());
+    fn configs_from_before_soloist_still_load() {
+        let old = "device_name = \"Den\"\nstate_dir = \"/x\"\naudio_backend = \"alsa\"\n\
+                   audio_device = \"plughw:CARD=Headphones\"\nbitrate = 320\n";
+        assert_eq!(Config::parse(old).unwrap().device_name, "Den");
     }
 }

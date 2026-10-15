@@ -126,43 +126,52 @@ async fn run(
         );
         (spawn_fake_player(catalog, inputs.clone()), library)
     } else {
-        let (session_tx, session_rx) = tokio::sync::watch::channel(None);
-        let player = match &sonos_room {
-            // A Sonos room plays; this device's own player doesn't start.
-            Some(room) => crate::player::sonos::spawn(room.clone(), cache.clone(), inputs.clone()),
-            None => crate::player::librespot::spawn(
-                crate::player::librespot::PlayerSettings::from_config(&config),
-                session_tx,
-                inputs.clone(),
-            ),
-        };
         let http = crate::library::web_api::ReqwestHttp::new()?;
         // Endpoints Spotify told us to leave alone, remembered across restarts.
         let block_file = config.cache_dir().join("rate-limits.json");
         let web_auth = config
             .state_dir
             .join(crate::library::refresh_tokens::FILE_NAME);
-        let library = if web_auth.is_file() {
-            // Contingency A: library requests use the parent's own developer app.
-            tracing::info!("using developer-app tokens from {}", web_auth.display());
-            let tokens = crate::library::refresh_tokens::RefreshTokens::load(&web_auth)?;
-            let source = Arc::new(
-                crate::library::web_api::WebApi::new(http, tokens)
-                    .with_block_file(block_file.clone()),
+        // The library uses the developer app `ziggy setup` signed in with.
+        if !web_auth.is_file() {
+            tracing::error!(
+                "no library sign-in at {}; run `ziggy signin`",
+                web_auth.display()
             );
-            spawn_library(source, cache, inputs.clone())
-        } else {
-            let tokens = crate::library::session_tokens::SessionTokens::new(session_rx);
-            let source = Arc::new(
-                crate::library::web_api::WebApi::new(http, tokens)
-                    .with_block_file(block_file.clone()),
-            );
-            spawn_library(source, cache, inputs.clone())
+            let _ = inputs.send(Input::AuthInvalid);
+        }
+        let tokens = crate::library::refresh_tokens::RefreshTokens::load(&web_auth)
+            .unwrap_or_else(|_| crate::library::refresh_tokens::RefreshTokens::missing(&web_auth));
+        let source = Arc::new(
+            crate::library::web_api::WebApi::new(http, tokens).with_block_file(block_file.clone()),
+        );
+        let player = match &sonos_room {
+            // A Sonos room plays; this device's own player doesn't start.
+            Some(room) => crate::player::sonos::spawn(room.clone(), cache.clone(), inputs.clone()),
+            None if cfg!(target_os = "linux") => crate::player::soloist::spawn(
+                crate::player::soloist::SoloistSettings {
+                    device_name: config.device_name.clone(),
+                    api_key_file: config.soloist_api_key_file(),
+                    state_dir: config.state_dir.clone(),
+                    initial_volume: config.initial_volume,
+                    output: speaker
+                        .as_ref()
+                        .map(|s| crate::player::soloist::protocol::bluetooth_node(&s.address)),
+                },
+                cache.clone(),
+                Some(start_through_web_api(
+                    source.clone(),
+                    config.device_name.clone(),
+                )),
+                inputs.clone(),
+            ),
+            None => crate::player::spawn_unavailable(inputs.clone()),
         };
+        let library = spawn_library(source, cache, inputs.clone());
         (player, library)
     };
     spawn_image_loader(
-        Arc::new(ImageLoader::new(config.images_dir(), 300)?.with_books(books_handle.clone())),
+        Arc::new(ImageLoader::new(config.images_dir())?.with_books(books_handle.clone())),
         image_requests,
         images,
     );
@@ -345,6 +354,53 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             }
         }
     }
+}
+
+/// Starts a list at a song on this player through Spotify's Web API: finds the player in the
+/// account's device list by name (once), then asks Spotify to play there. False on any failure,
+/// and the player skips ahead itself instead.
+fn start_through_web_api(
+    api: Arc<
+        crate::library::web_api::WebApi<
+            crate::library::web_api::ReqwestHttp,
+            crate::library::refresh_tokens::RefreshTokens,
+        >,
+    >,
+    device_name: String,
+) -> crate::player::soloist::StartFn {
+    let device_id = Arc::new(std::sync::Mutex::new(None::<String>));
+    Arc::new(move |context_uri, start| {
+        let (api, device_name, device_id) = (api.clone(), device_name.clone(), device_id.clone());
+        Box::pin(async move {
+            let known = device_id.lock().unwrap().clone();
+            let id = match known {
+                Some(id) => id,
+                None => match api.device_id(&device_name).await {
+                    Ok(Some(id)) => {
+                        *device_id.lock().unwrap() = Some(id.clone());
+                        id
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Spotify doesn't list {device_name:?} as a device yet");
+                        return false;
+                    }
+                    Err(e) => {
+                        tracing::warn!("couldn't find this player in Spotify's devices: {e}");
+                        return false;
+                    }
+                },
+            };
+            match api.play_from(&id, &context_uri, &start).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!("Spotify didn't start {context_uri} at {start:?}: {e}");
+                    // The ID may be stale (the player was renamed or paired again).
+                    *device_id.lock().unwrap() = None;
+                    false
+                }
+            }
+        })
+    })
 }
 
 #[cfg(test)]

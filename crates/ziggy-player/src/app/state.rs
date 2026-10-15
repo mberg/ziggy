@@ -265,6 +265,8 @@ pub struct AppState {
     pub display: DisplayMode,
     pub online: bool,
     pub auth_needed: bool,
+    /// The player waits to be picked in a Spotify app before it can play.
+    pub pairing_needed: bool,
     pub speaker_connected: bool,
     /// The account the library comes from, once known.
     pub account: Option<Account>,

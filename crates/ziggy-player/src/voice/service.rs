@@ -75,18 +75,15 @@ pub fn spawn_voice(
                 let (tx, rx) = std::sync::mpsc::channel();
                 let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 // The stream records while it's alive.
-                let _stream = match super::mic::open(
-                    settings.microphone.as_deref(),
-                    tx,
-                    failed.clone(),
-                ) {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        tracing::warn!("voice: {e:#}; trying again soon");
-                        std::thread::sleep(Duration::from_secs(10));
-                        continue;
-                    }
-                };
+                let _stream =
+                    match super::mic::open(settings.microphone.as_deref(), tx, failed.clone()) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            tracing::warn!("voice: {e:#}; trying again soon");
+                            std::thread::sleep(Duration::from_secs(10));
+                            continue;
+                        }
+                    };
                 // Ends when the microphone goes away: it reports an error and goes quiet, or it
                 // sends nothing for 5 s.
                 let (mut peak, mut since) = (0.0f32, std::time::Instant::now());

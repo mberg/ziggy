@@ -104,7 +104,7 @@ pub struct Collection {
     pub year: Option<u16>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Track {
     pub uri: String,
     pub name: String,

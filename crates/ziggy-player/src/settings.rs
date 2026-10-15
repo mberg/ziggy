@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 
 pub const FILE_NAME: &str = "settings.json";
-const JACK_DEVICE: &str = "plughw:CARD=Headphones";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Speaker {
@@ -82,28 +81,11 @@ impl Settings {
         if let Some(name) = self.device_name.as_ref().filter(|n| !n.trim().is_empty()) {
             config.device_name = name.clone();
         }
-        let alsa = config.audio_backend == "alsa";
         match &self.output {
-            None => {}
-            Some(Output::Jack) => {
-                config.bluetooth_speaker = None;
-                if alsa
-                    && config
-                        .audio_device
-                        .as_deref()
-                        .is_none_or(|d| d.starts_with("bluealsa"))
-                {
-                    config.audio_device = Some(JACK_DEVICE.into());
-                }
-            }
-            // This device plays nothing; its own audio settings don't matter.
-            Some(Output::Sonos(_)) => {}
+            None | Some(Output::Sonos(_)) => {}
+            Some(Output::Jack) => config.bluetooth_speaker = None,
             Some(Output::Bluetooth(speaker)) => {
                 config.bluetooth_speaker = Some(speaker.address.clone());
-                if alsa {
-                    config.audio_device =
-                        Some(format!("bluealsa:DEV={},PROFILE=a2dp", speaker.address));
-                }
             }
         }
     }
@@ -114,10 +96,7 @@ mod tests {
     use super::*;
 
     fn pi_config() -> Config {
-        Config::parse(
-            "device_name = \"Ziggy\"\nstate_dir = \"/tmp/x\"\naudio_backend = \"alsa\"\naudio_device = \"plughw:CARD=Headphones\"\n",
-        )
-        .unwrap()
+        Config::parse("device_name = \"Ziggy\"\nstate_dir = \"/tmp/x\"\n").unwrap()
     }
 
     #[test]
@@ -141,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn bluetooth_speaker_routes_audio_through_bluealsa() {
+    fn a_chosen_bluetooth_speaker_is_the_one_to_play_on() {
         let mut config = pi_config();
         Settings {
             device_name: Some("Kitchen".into()),
@@ -156,10 +135,6 @@ mod tests {
         .apply(&mut config);
         assert_eq!(config.device_name, "Kitchen");
         assert_eq!(
-            config.audio_device.as_deref(),
-            Some("bluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp")
-        );
-        assert_eq!(
             config.bluetooth_speaker.as_deref(),
             Some("AA:BB:CC:DD:EE:FF")
         );
@@ -168,7 +143,6 @@ mod tests {
     #[test]
     fn jack_undoes_a_configured_speaker() {
         let mut config = pi_config();
-        config.audio_device = Some("bluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp".into());
         config.bluetooth_speaker = Some("AA:BB:CC:DD:EE:FF".into());
         Settings {
             device_name: None,
@@ -178,7 +152,6 @@ mod tests {
             audiobooks: None,
         }
         .apply(&mut config);
-        assert_eq!(config.audio_device.as_deref(), Some(JACK_DEVICE));
         assert_eq!(config.bluetooth_speaker, None);
         assert_eq!(config.device_name, "Ziggy");
     }

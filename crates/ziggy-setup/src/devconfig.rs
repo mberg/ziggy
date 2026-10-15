@@ -31,8 +31,6 @@ pub struct Voice {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choices {
     pub device_name: String,
-    /// Spotify stream quality in kbps: 96, 160 or 320.
-    pub bitrate: u16,
     pub audiobookshelf_url: Option<String>,
     pub voice: Option<Voice>,
 }
@@ -44,7 +42,6 @@ pub fn new_config(choices: &Choices) -> Table {
     t.insert("audio_backend".into(), "alsa".into());
     t.insert("audio_device".into(), "plughw:CARD=Headphones".into());
     t.insert("initial_volume".into(), Value::Integer(60));
-    t.insert("bitrate".into(), Value::Integer(i64::from(choices.bitrate)));
     t.insert("dim_after_secs".into(), Value::Integer(180));
     t.insert("off_after_secs".into(), Value::Integer(600));
     if let Some(url) = &choices.audiobookshelf_url {
@@ -101,7 +98,6 @@ pub fn parse(text: &str) -> anyhow::Result<Table> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Setting {
     DeviceName,
-    Quality,
     Volume,
     DimAfter,
     OffAfter,
@@ -114,9 +110,8 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 11] = [
+    pub const ALL: [Setting; 10] = [
         Setting::DeviceName,
-        Setting::Quality,
         Setting::Volume,
         Setting::DimAfter,
         Setting::OffAfter,
@@ -131,7 +126,6 @@ impl Setting {
     pub fn label(self) -> &'static str {
         match self {
             Setting::DeviceName => "Device name",
-            Setting::Quality => "Sound quality",
             Setting::Volume => "Starting volume",
             Setting::DimAfter => "Dim the screen after",
             Setting::OffAfter => "Turn the screen off after",
@@ -151,7 +145,6 @@ impl Setting {
         let voice_on = t.contains_key("voice_model_dir");
         match self {
             Setting::DeviceName => s("device_name").unwrap_or_default(),
-            Setting::Quality => quality_label(n("bitrate").unwrap_or(320)).to_string(),
             Setting::Volume => format!("{}%", n("initial_volume").unwrap_or(50)),
             Setting::DimAfter => minutes(n("dim_after_secs").unwrap_or(180)),
             Setting::OffAfter => minutes(n("off_after_secs").unwrap_or(600)),
@@ -175,7 +168,6 @@ impl Setting {
     pub fn key(self) -> Option<&'static str> {
         Some(match self {
             Setting::DeviceName => "device_name",
-            Setting::Quality => "bitrate",
             Setting::Volume => "initial_volume",
             Setting::DimAfter => "dim_after_secs",
             Setting::OffAfter => "off_after_secs",
@@ -187,20 +179,6 @@ impl Setting {
             Setting::Voice => return None,
         })
     }
-}
-
-/// The quality choices, best first, as (kbps, label).
-pub const QUALITIES: [(u16, &str); 3] = [
-    (320, "Very high, 320 kbps"),
-    (160, "High, 160 kbps"),
-    (96, "Normal, 96 kbps (uses the least data)"),
-];
-
-pub fn quality_label(kbps: i64) -> &'static str {
-    QUALITIES
-        .iter()
-        .find(|(k, _)| i64::from(*k) == kbps)
-        .map_or("Very high, 320 kbps", |(_, label)| label)
 }
 
 fn minutes(secs: i64) -> String {
@@ -234,10 +212,6 @@ pub fn check(t: &Table) -> anyhow::Result<()> {
         "volume must be 0-100"
     );
     anyhow::ensure!(
-        [96, 160, 320].contains(&n("bitrate", 320)),
-        "sound quality must be 96, 160 or 320 kbps"
-    );
-    anyhow::ensure!(
         n("off_after_secs", 600) > n("dim_after_secs", 180),
         "the screen must dim before it turns off"
     );
@@ -257,7 +231,6 @@ mod tests {
     fn choices() -> Choices {
         Choices {
             device_name: "Kitchen".into(),
-            bitrate: 320,
             audiobookshelf_url: Some("http://nas.local:13378".into()),
             voice: Some(Voice {
                 wake_phrase: "ziggy".into(),
@@ -272,7 +245,6 @@ mod tests {
         let text = render(&new_config(&choices()));
         let config = ziggy_player_config(&text);
         assert!(config.contains("device_name = \"Kitchen\""));
-        assert!(config.contains("bitrate = 320"));
         assert!(config.contains("vertex_key_file = \"/var/lib/ziggy/vertex-key.json\""));
         assert!(config.contains(&format!("voice_model_dir = \"{}\"", wake_model_dir())));
         check(&parse(&text).unwrap()).unwrap();
@@ -306,7 +278,6 @@ mod tests {
     fn the_menu_shows_values_and_bad_edits_are_caught() {
         let mut t = new_config(&choices());
         assert_eq!(Setting::DimAfter.show(&t), "3 min");
-        assert_eq!(Setting::Quality.show(&t), "Very high, 320 kbps");
         assert_eq!(Setting::Audiobookshelf.show(&t), "http://nas.local:13378");
         set_text(&mut t, "audiobookshelf_url", " ");
         assert_eq!(Setting::Audiobookshelf.show(&t), "off");

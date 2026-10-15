@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use librespot::oauth::OAuthClientBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::FetchError;
-use super::web_api::{SCOPES, TokenSource};
+use super::web_api::TokenSource;
+
+const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
 /// Must match the redirect URI registered on the developer app and used by `ziggy-setup`.
 pub const REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
@@ -21,6 +22,51 @@ pub const FILE_NAME: &str = "web-auth.json";
 pub struct WebAuth {
     pub client_id: String,
     pub refresh_token: String,
+}
+
+/// Spotify's answer to a refresh. It may hand back a new refresh token.
+#[derive(Deserialize)]
+struct Refreshed {
+    access_token: String,
+    expires_in: u64,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+/// Swaps the refresh token for an access token. The developer app is a public client (PKCE), so
+/// no secret is sent.
+async fn refresh(client_id: &str, refresh_token: &str) -> Result<Refreshed, FetchError> {
+    let response = reqwest::Client::new()
+        .post(TOKEN_URL)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", client_id),
+        ])
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::warn!("web token refresh failed: {e}");
+            FetchError::Offline
+        })?;
+    let status = response.status();
+    if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
+        // invalid_grant: the sign-in was revoked or expired; `ziggy signin` fixes it.
+        tracing::warn!(
+            "Spotify refused the saved sign-in: {}",
+            response.text().await.unwrap_or_default()
+        );
+        return Err(FetchError::Auth);
+    }
+    if !status.is_success() {
+        tracing::warn!("web token refresh failed: HTTP {status}");
+        return Err(FetchError::Offline);
+    }
+    response
+        .json::<Refreshed>()
+        .await
+        .map_err(|e| FetchError::Other(e.to_string()))
 }
 
 struct Cached {
@@ -44,6 +90,18 @@ impl RefreshTokens {
         })
     }
 
+    /// No sign-in saved: every request reports that sign-in is needed.
+    pub fn missing(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            auth: Mutex::new(WebAuth {
+                client_id: String::new(),
+                refresh_token: String::new(),
+            }),
+            cached: Mutex::new(None),
+        }
+    }
+
     fn cached_token(&self) -> Option<String> {
         let cached = self.cached.lock().unwrap();
         cached
@@ -62,24 +120,15 @@ impl TokenSource for RefreshTokens {
             client_id,
             refresh_token,
         } = self.auth.lock().unwrap().clone();
-        let fresh = tokio::task::spawn_blocking(move || {
-            OAuthClientBuilder::new(&client_id, REDIRECT_URI, SCOPES.split(',').collect())
-                .build()?
-                .refresh_token(&refresh_token)
-        })
-        .await
-        .map_err(|e| FetchError::Other(e.to_string()))?
-        .map_err(|e| {
-            tracing::warn!("web token refresh failed: {e}");
-            // librespot's OAuthError does not say whether the network or the token failed,
-            // so treat it as offline: the UI keeps the cached library and retries later.
-            FetchError::Offline
-        })?;
+        if client_id.is_empty() {
+            return Err(FetchError::Auth);
+        }
+        let fresh = refresh(&client_id, &refresh_token).await?;
 
-        if !fresh.refresh_token.is_empty() {
+        if let Some(rotated) = fresh.refresh_token.filter(|t| !t.is_empty()) {
             let mut auth = self.auth.lock().unwrap();
-            if auth.refresh_token != fresh.refresh_token {
-                auth.refresh_token = fresh.refresh_token.clone();
+            if auth.refresh_token != rotated {
+                auth.refresh_token = rotated;
                 if let Err(e) = serde_json::to_vec_pretty(&*auth)
                     .map_err(anyhow::Error::from)
                     .and_then(|json| std::fs::write(&self.path, json).map_err(Into::into))
@@ -90,7 +139,7 @@ impl TokenSource for RefreshTokens {
         }
         *self.cached.lock().unwrap() = Some(Cached {
             token: fresh.access_token.clone(),
-            expires: fresh.expires_at,
+            expires: Instant::now() + Duration::from_secs(fresh.expires_in),
         });
         Ok(fresh.access_token)
     }

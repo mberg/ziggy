@@ -151,35 +151,30 @@ fn spotify_client_id() -> anyhow::Result<String> {
     Ok(id.trim().to_string())
 }
 
-/// Signs a Spotify account in for a player (playback, then the library) and checks it.
-async fn spotify_sign_in(dir: &Path, client_id: &str) -> anyhow::Result<()> {
-    if let Some(account) = spotify::playback_account(dir)
-        && dir.join(spotify::WEB_AUTH_FILE).is_file()
+/// Signs a Spotify account in for a player's library (the developer app) and checks it.
+/// Playback signs in on the Pi itself; see `pair`.
+async fn library_sign_in(dir: &Path, client_id: &str) -> anyhow::Result<()> {
+    if dir.join(spotify::WEB_AUTH_FILE).is_file()
         && yes(
-            &format!("Use the Spotify sign-in saved for this player ({account})?"),
+            "Use the Spotify library sign-in saved for this player?",
             true,
         )?
     {
         return Ok(());
     }
     loop {
-        say(
-            "A browser opens twice. Both times, sign in with the Spotify account this player should use.",
-        );
-        say("First, for playback:");
-        spotify::auth(dir).await?;
-        say("Then for the library:");
+        say("A browser opens. Sign in with the Spotify account this player is for.");
         spotify::auth_web(dir, client_id).await?;
         say("Checking access…");
         match spotify::probe(dir).await {
             Ok(()) => {
-                ok("Spotify works");
+                ok("The library works");
                 return Ok(());
             }
             Err(e) if e.to_string().contains("429") => {
                 say(&format!(
                     "{} Spotify is limiting requests from the developer app right now, so the\n\
-                     check is skipped. The sign-ins are saved; the library loads once the limit\n\
+                     check is skipped. The sign-in is saved; the library loads once the limit\n\
                      ends (usually within a day). Playing music isn't affected.",
                     style("!").yellow()
                 ));
@@ -189,7 +184,7 @@ async fn spotify_sign_in(dir: &Path, client_id: &str) -> anyhow::Result<()> {
                 say(&format!(
                     "{} Spotify refused some requests: {e}\n\
                      Usually the account's email isn't under \"User Management\" in the developer\n\
-                     app, or two different accounts were used in the browser.",
+                     app.",
                     style("!").yellow()
                 ));
                 if !yes("Sign in again?", true)? {
@@ -200,19 +195,57 @@ async fn spotify_sign_in(dir: &Path, client_id: &str) -> anyhow::Result<()> {
     }
 }
 
-/// Spotify stream quality, highest first.
-fn choose_quality(current: i64) -> anyhow::Result<u16> {
-    let labels: Vec<&str> = devconfig::QUALITIES.iter().map(|(_, l)| *l).collect();
-    let default = devconfig::QUALITIES
-        .iter()
-        .position(|(k, _)| i64::from(*k) == current)
-        .unwrap_or(0);
-    let pick = Select::with_theme(&theme())
-        .with_prompt("Sound quality for Spotify")
-        .items(&labels)
-        .default(default)
+/// The Spotify Soloist API key, asked for once and kept privately on this computer.
+fn soloist_key() -> anyhow::Result<PathBuf> {
+    let path = store::soloist_key_file();
+    if std::fs::read_to_string(&path).is_ok_and(|k| !k.trim().is_empty()) {
+        return Ok(path);
+    }
+    say(
+        "Ziggy plays music with Spotify Soloist, Spotify's own player for Raspberry Pi. It needs an\n\
+         API key, made once with a Spotify Premium account:\n\
+         1. Open https://developer.spotify.com/dashboard and choose \"Spotify Soloist API Key\".\n\
+         2. Accept the terms and generate a key.\n\
+         The key is yours: don't share or publish it.",
+    );
+    let key = Password::with_theme(&theme())
+        .with_prompt("The Soloist API key")
+        .validate_with(|s: &String| {
+            if s.trim().len() >= 16 && !s.trim().contains(char::is_whitespace) {
+                Ok(())
+            } else {
+                Err("that doesn't look like an API key")
+            }
+        })
         .interact()?;
-    Ok(devconfig::QUALITIES[pick].0)
+    store::save_soloist_key(&key)
+}
+
+/// Playback signs in on the Pi: the player waits to be picked in a Spotify app. Waits up to
+/// ten minutes for that, then leaves it to the player's screen.
+fn pair(ssh: &Ssh, device_name: &str) -> anyhow::Result<()> {
+    if install::is_paired(ssh) {
+        ok("Signed in to Spotify for playback");
+        return Ok(());
+    }
+    say(&format!(
+        "Now sign it in for playback. On a phone or computer on this Wi-Fi, open the Spotify app,\n\
+         signed in as the person this player is for. Tap the devices button, choose\n\
+         \"{device_name}\" and play anything. (The player's screen says the same.)"
+    ));
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(600) {
+        std::thread::sleep(Duration::from_secs(5));
+        if install::is_paired(ssh) {
+            ok("Signed in. Music plays on the player");
+            return Ok(());
+        }
+    }
+    say(&format!(
+        "{} Not picked yet. Do it any time: the player's screen shows how.",
+        style("!").yellow()
+    ));
+    Ok(())
 }
 
 fn audiobookshelf(current: Option<&str>) -> anyhow::Result<Option<String>> {
@@ -354,17 +387,11 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         &current_name.unwrap_or_else(|| name_from_host(&ssh.host)),
     )?;
 
-    let current_bitrate = existing
-        .as_ref()
-        .and_then(|t| t.get("bitrate"))
-        .and_then(|v| v.as_integer())
-        .unwrap_or(320);
-    let bitrate = choose_quality(current_bitrate)?;
-
     step(3, STEPS, "Spotify");
     let client_id = spotify_client_id()?;
     let spotify_dir = store::device_dir(&ssh.host)?;
-    spotify_sign_in(&spotify_dir, &client_id).await?;
+    library_sign_in(&spotify_dir, &client_id).await?;
+    let soloist_key = soloist_key()?;
 
     step(4, STEPS, "Extras");
     let current = |key: &str| {
@@ -402,7 +429,6 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
     }
     let config = devconfig::new_config(&devconfig::Choices {
         device_name: device_name.clone(),
-        bitrate,
         audiobookshelf_url: audiobookshelf_url.clone(),
         voice: voice.clone(),
     });
@@ -411,6 +437,7 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         &ssh,
         &Secrets {
             spotify_dir: &spotify_dir,
+            soloist_key: Some(&soloist_key),
             vertex_key: vertex_key.as_deref(),
         },
     )?;
@@ -423,6 +450,12 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         let _ = install::restart(&ssh)?;
     }
     let running = report_running(&ssh)?;
+    if running {
+        pair(
+            &ssh,
+            &install::device_name(&ssh).unwrap_or_else(|| device_name.clone()),
+        )?;
+    }
 
     println!(
         "\n{}",
@@ -511,11 +544,6 @@ pub fn config(host: &str) -> anyhow::Result<()> {
                 say("Turn voice control on first.");
                 continue;
             }
-            Setting::Quality => {
-                let current = t.get("bitrate").and_then(|v| v.as_integer()).unwrap_or(320);
-                let kbps = choose_quality(current)?;
-                t.insert("bitrate".into(), toml::Value::Integer(i64::from(kbps)));
-            }
             Setting::Volume | Setting::DimAfter | Setting::OffAfter => {
                 let key = setting.key().expect("a key");
                 let (prompt, scale) = match setting {
@@ -580,6 +608,7 @@ pub fn config(host: &str) -> anyhow::Result<()> {
             &ssh,
             &Secrets {
                 spotify_dir: &dir.join("none"),
+                soloist_key: None,
                 vertex_key: Some(key),
             },
         )?;
@@ -614,8 +643,24 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
         install::provision(&ssh)?;
         ok("Moved. Settings, sign-in and speaker are kept");
     }
+    let migrate = install::needs_soloist_migration(&ssh);
+    if migrate {
+        say("This player still uses the old Spotify player. Switching it to Spotify Soloist…");
+        let key = soloist_key()?;
+        install::provision(&ssh)?;
+        install::install_secrets(
+            &ssh,
+            &Secrets {
+                spotify_dir: &store::device_dir(&ssh.host)?.join("none"),
+                soloist_key: Some(&key),
+                vertex_key: None,
+            },
+        )?;
+        ok("Switched to PipeWire, with the Soloist key copied");
+    }
     install::keep_logs(&ssh)?;
     install::allow_power_off(&ssh)?;
+    install::install_service(&ssh)?;
     say("Installing the player…");
     install::install_player(&ssh, &player)?;
     let after = install::installed_version(&ssh);
@@ -629,6 +674,12 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
         bail!("the player didn't start:\n{logs}");
     }
     ok("The player is running");
+    if migrate {
+        let name = install::device_name(&ssh).unwrap_or_else(|| name_from_host(&ssh.host));
+        // Soloist downloads and starts on the player's first run; give it a moment.
+        std::thread::sleep(Duration::from_secs(20));
+        pair(&ssh, &name)?;
+    }
     Ok(())
 }
 
@@ -677,28 +728,37 @@ pub fn logs(host: &str) -> anyhow::Result<()> {
     ssh.stream("sudo journalctl -u ziggy-player -n 50 -f -o short")
 }
 
-/// Signs a different (or the same) Spotify account in on a player, then restarts it.
+/// Signs a different (or the same) Spotify account in on a player: the library through the
+/// developer app, then playback by picking the player in a Spotify app.
 pub async fn signin(host: &str) -> anyhow::Result<()> {
     let ssh = connect(host)?;
     let client_id = spotify_client_id()?;
     let dir = store::device_dir(&ssh.host)?;
     // A fresh sign-in, not the saved one.
     let _ = std::fs::remove_file(dir.join(spotify::WEB_AUTH_FILE));
-    let _ = std::fs::remove_dir_all(dir.join("librespot"));
-    spotify_sign_in(&dir, &client_id).await?;
+    library_sign_in(&dir, &client_id).await?;
     install::install_secrets(
         &ssh,
         &Secrets {
             spotify_dir: &dir,
+            soloist_key: None,
             vertex_key: None,
         },
     )?;
+    // Playback is signed in separately, on the Pi; only a change of account needs it again.
+    let repair = yes(
+        "Sign playback in again too? (Only needed to change the Spotify account.)",
+        false,
+    )?;
+    if repair {
+        install::request_pairing(&ssh)?;
+    }
     let (running, logs) = install::restart(&ssh)?;
     if !running {
         bail!("the player didn't start:\n{logs}");
     }
-    ok("Signed in; the player restarted");
-    Ok(())
+    let name = install::device_name(&ssh).unwrap_or_else(|| name_from_host(&ssh.host));
+    pair(&ssh, &name)
 }
 
 #[cfg(test)]

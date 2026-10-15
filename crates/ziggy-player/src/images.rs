@@ -15,7 +15,6 @@ pub type ImageSink = Arc<dyn Fn(String, Option<RgbaImage>) + Send + Sync>;
 pub struct ImageLoader {
     client: reqwest::Client,
     dir: PathBuf,
-    max_px: u32,
     /// Audiobookshelf covers ("abs-cover:<item id>") need the signed-in client.
     books: Option<crate::audiobooks::service::AbsHandle>,
 }
@@ -39,6 +38,21 @@ pub fn cache_file_name(url: &str) -> String {
     }
 }
 
+/// Covers are decoded at the size they're shown, not as downloaded: a grid tile is about 160 px.
+pub const SMALL_PX: u32 = 160;
+/// The Now Playing and book covers are about 320 px.
+pub const LARGE_PX: u32 = 320;
+/// A requested URL with this in front wants the large copy, kept separately in memory.
+pub const LARGE: &str = "large:";
+
+/// The URL to download, and the size to decode it at.
+pub fn sized(request: &str) -> (&str, u32) {
+    match request.strip_prefix(LARGE) {
+        Some(url) => (url, LARGE_PX),
+        None => (request, SMALL_PX),
+    }
+}
+
 pub fn decode(bytes: &[u8], max_px: u32) -> anyhow::Result<RgbaImage> {
     let img = image::load_from_memory(bytes)?;
     let img = if img.width() > max_px || img.height() > max_px {
@@ -50,7 +64,7 @@ pub fn decode(bytes: &[u8], max_px: u32) -> anyhow::Result<RgbaImage> {
 }
 
 impl ImageLoader {
-    pub fn new(dir: PathBuf, max_px: u32) -> anyhow::Result<Self> {
+    pub fn new(dir: PathBuf) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
@@ -58,7 +72,6 @@ impl ImageLoader {
         Ok(Self {
             client,
             dir,
-            max_px,
             books: None,
         })
     }
@@ -91,7 +104,10 @@ impl ImageLoader {
             .to_vec())
     }
 
-    pub async fn load(&self, url: &str) -> anyhow::Result<RgbaImage> {
+    /// `request` is a cover URL, or one marked `LARGE` for the big copy. Both sizes share the
+    /// file on disk.
+    pub async fn load(&self, request: &str) -> anyhow::Result<RgbaImage> {
+        let (url, max_px) = sized(request);
         let path = self.dir.join(cache_file_name(url));
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
@@ -103,7 +119,6 @@ impl ImageLoader {
                 bytes
             }
         };
-        let max_px = self.max_px;
         let decoded = tokio::task::spawn_blocking(move || decode(&bytes, max_px)).await?;
         if decoded.is_err() {
             let _ = tokio::fs::remove_file(&path).await;
@@ -141,6 +156,18 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    #[test]
+    fn covers_are_small_unless_asked_for_large() {
+        assert_eq!(
+            sized("https://i.scdn.co/a"),
+            ("https://i.scdn.co/a", SMALL_PX)
+        );
+        assert_eq!(
+            sized("large:https://i.scdn.co/a"),
+            ("https://i.scdn.co/a", LARGE_PX)
+        );
+    }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(width, height, image::Rgba([200, 100, 50, 255]));
