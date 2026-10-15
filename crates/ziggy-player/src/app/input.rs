@@ -195,6 +195,8 @@ pub enum BtCommand {
 pub enum UiAction {
     /// Shut the Pi down, after the person confirmed it.
     PowerOff,
+    /// Rejoin the Wi-Fi and Spotify, for when music or the library stops loading.
+    Reconnect,
     ShowSection(Section),
     OpenCollection(String),
     Back,
@@ -412,6 +414,8 @@ pub enum Effect {
     VoiceListen,
     /// Blank the screen and shut the Pi down.
     PowerOff,
+    /// Rejoin the Wi-Fi, then restart the player so Spotify connects afresh.
+    Reconnect,
 }
 
 #[derive(Debug, Clone, PartialEq)]

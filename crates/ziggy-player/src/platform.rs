@@ -267,6 +267,30 @@ pub async fn power_off() {
     }
 }
 
+/// Asks NetworkManager to rejoin the Wi-Fi, waiting up to 45 s. The service user may run
+/// exactly this through sudo (set up by `ziggy setup` and `ziggy update`); on a computer
+/// without it, nothing happens.
+pub async fn rejoin_wifi() {
+    tracing::info!("rejoining the Wi-Fi");
+    match tokio::process::Command::new("sudo")
+        .args([
+            "-n",
+            "/usr/bin/nmcli",
+            "--wait",
+            "45",
+            "device",
+            "connect",
+            "wlan0",
+        ])
+        .status()
+        .await
+    {
+        Ok(status) if status.success() => tracing::info!("Wi-Fi rejoined"),
+        Ok(status) => tracing::warn!("rejoining the Wi-Fi failed: sudo exited with {status}"),
+        Err(e) => tracing::warn!("rejoining the Wi-Fi failed: {e}"),
+    }
+}
+
 /// Replaces this process with a fresh copy of itself, with the same arguments, so new
 /// settings take effect. Under systemd the service keeps its PID; on a Mac the window reopens.
 pub fn restart() -> ! {

@@ -1,0 +1,7 @@
+[Unit]
+Description=Ziggy: rejoin the Wi-Fi when it's down
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ziggy/wifi-watch

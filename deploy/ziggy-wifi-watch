@@ -1,0 +1,12 @@
+#!/bin/sh
+# Ziggy: rejoins the Wi-Fi when it's down. Run every 30 s by ziggy-wifi-watch.timer.
+#
+# When the router turns the Pi away a few times in a row, NetworkManager decides the password
+# must be wrong and stops trying until someone intervenes; before this, that meant unplugging
+# the player. Asking for the device by name clears that and tries the saved networks again.
+command -v nmcli >/dev/null 2>&1 || exit 0
+state=$(nmcli -t -f DEVICE,STATE device 2>/dev/null | sed -n 's/^wlan0://p')
+# Connected, already trying, or no Wi-Fi at all (radio off, or a wired Pi): nothing to do.
+[ "$state" = disconnected ] || exit 0
+echo "Wi-Fi is down; asking NetworkManager to rejoin"
+nmcli --wait 45 device connect wlan0 || echo "rejoining failed; trying again shortly"

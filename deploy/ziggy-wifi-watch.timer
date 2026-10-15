@@ -1,0 +1,11 @@
+[Unit]
+Description=Ziggy: check the Wi-Fi every 30 seconds
+
+[Timer]
+# Give the Wi-Fi its own chance to come up after boot first.
+OnBootSec=90s
+OnUnitInactiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

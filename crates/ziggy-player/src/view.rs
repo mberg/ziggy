@@ -593,7 +593,9 @@ fn settings(state: &AppState) -> SettingsView {
         Some(crate::settings::Output::Sonos(room)) => Some(room.clone()),
         _ => None,
     };
-    let message = if d.restarting {
+    let message = if d.reconnecting {
+        "Reconnecting to the Wi-Fi and Spotify…".to_string()
+    } else if d.restarting {
         "Saved. Restarting the player…".to_string()
     } else if let Some(name) = &d.failed {
         format!("Couldn't connect to {name}. Check it's on and ready to pair.")

@@ -2266,3 +2266,91 @@ fn voice_hearts_the_song_saves_the_album_and_adds_to_a_playlist() {
             .any(|e| matches!(e, PlaylistEdit::Add { .. }))
     );
 }
+
+fn wifi_up() -> Input {
+    Input::Wifi(Some(crate::app::WifiStatus::Connected {
+        network: "Home".into(),
+        band: "5 GHz".into(),
+        signal: 80,
+    }))
+}
+
+fn library_requests(fx: &[Effect]) -> Vec<&LibraryRequest> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::Library(request) => Some(request),
+            _ => None,
+        })
+        .collect()
+}
+
+fn offline_core() -> Core {
+    let mut c = core();
+    c.handle(
+        Input::Library(LibraryUpdate::SectionFailed {
+            section: Section::Playlists,
+            reason: FailReason::Offline,
+        }),
+        0,
+    );
+    assert!(!c.state().online);
+    c
+}
+
+// The Wi-Fi came back after an outage: Spotify playback may still be signed in, so nothing
+// else would tell the library to try again.
+#[test]
+fn wifi_coming_back_reloads_the_library() {
+    let mut c = offline_core();
+    c.handle(
+        Input::Wifi(Some(crate::app::WifiStatus::Disconnected)),
+        1_000,
+    );
+    let fx = c.handle(wifi_up(), 2_000);
+    assert!(library_requests(&fx).contains(&&LibraryRequest::Section(Section::Playlists)));
+    assert!(library_requests(&fx).contains(&&LibraryRequest::Section(Section::Albums)));
+}
+
+#[test]
+fn wifi_staying_up_while_online_reloads_nothing() {
+    let mut c = core();
+    c.handle(wifi_up(), 1_000);
+    c.handle(
+        Input::Wifi(Some(crate::app::WifiStatus::Disconnected)),
+        2_000,
+    );
+    assert!(library_requests(&c.handle(wifi_up(), 3_000)).is_empty());
+}
+
+#[test]
+fn offline_with_wifi_up_tries_again_every_30_seconds() {
+    let mut c = offline_core();
+    c.handle(wifi_up(), 0);
+    assert!(library_requests(&c.handle(Input::Tick, 10_000)).is_empty());
+    let fx = c.handle(Input::Tick, 30_000);
+    assert!(library_requests(&fx).contains(&&LibraryRequest::Section(Section::Playlists)));
+    assert!(library_requests(&c.handle(Input::Tick, 40_000)).is_empty());
+    assert!(!library_requests(&c.handle(Input::Tick, 60_000)).is_empty());
+}
+
+#[test]
+fn offline_without_wifi_waits_for_it() {
+    let mut c = offline_core();
+    c.handle(Input::Wifi(Some(crate::app::WifiStatus::Disconnected)), 0);
+    assert!(library_requests(&c.handle(Input::Tick, 90_000)).is_empty());
+}
+
+#[test]
+fn reconnect_rejoins_the_wifi_once() {
+    let mut c = core();
+    assert_eq!(c.handle(ui(UiAction::Reconnect), 0), [Effect::Reconnect]);
+    assert!(c.state().device.reconnecting);
+    assert!(
+        c.handle(ui(UiAction::Reconnect), 10).is_empty(),
+        "only once"
+    );
+    assert_eq!(
+        crate::view::build(c.state()).settings.message,
+        "Reconnecting to the Wi-Fi and Spotify…"
+    );
+}

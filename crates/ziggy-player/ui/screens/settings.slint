@@ -147,6 +147,7 @@ export component SettingsScreen inherits Rectangle {
     callback rename-device();
     callback find-speakers();
     callback power-off();
+    callback reconnect();
     // The "Turn off?" question is open.
     property <bool> confirm-off;
     callback connect-speaker(string);
@@ -315,6 +316,23 @@ export component SettingsScreen inherits Rectangle {
                         index: i;
                         clicked => { root.set-theme(i); }
                     }
+                }
+            }
+            Card {
+                title: "Connection";
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    SmallPill {
+                        label: "Reconnect";
+                        clicked => { root.reconnect(); }
+                    }
+                }
+                Text {
+                    text: "Rejoins the Wi-Fi and Spotify. Try it if music or the library stops loading.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
                 }
             }
             Card {
