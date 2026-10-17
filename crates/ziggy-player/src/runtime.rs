@@ -334,6 +334,13 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
                     crate::platform::power_off().await;
                 });
             }
+            Effect::Reconnect => {
+                tokio::spawn(async {
+                    crate::platform::rejoin_wifi().await;
+                    tracing::info!("restarting so Spotify connects afresh");
+                    crate::platform::restart();
+                });
+            }
             Effect::SaveSettings(settings) => {
                 if let Err(e) = settings.save(&outputs.state_dir) {
                     tracing::error!("saving settings failed: {e:#}");

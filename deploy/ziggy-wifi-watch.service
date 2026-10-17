@@ -1,0 +1,11 @@
+[Unit]
+Description=Ziggy: rejoin the Wi-Fi when NetworkManager gives up
+After=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/lib/ziggy/wifi-watch
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

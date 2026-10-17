@@ -11,6 +11,8 @@ pub const REPO: &str = "mberg/ziggy";
 pub const PLAYER_ASSET: &str = "ziggy-player-linux-arm64.tar.gz";
 const PROVISION: &str = include_str!("../../../deploy/provision-remote.sh");
 const SERVICE: &str = include_str!("../../../deploy/ziggy-player.service");
+const WIFI_WATCH: &str = include_str!("../../../deploy/ziggy-wifi-watch");
+const WIFI_WATCH_SERVICE: &str = include_str!("../../../deploy/ziggy-wifi-watch.service");
 const WAKE_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models";
 
 /// Where the player binary comes from.
@@ -181,18 +183,66 @@ pub fn keep_logs(r: &dyn Remote) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Lets the player's service user shut the Pi down (the Turn off button), and nothing else.
-pub const POWER_SUDOERS: &str = "# Ziggy: the Turn off button in Settings.\nziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n";
+/// What the player's service user may run through sudo, and nothing else: shutting the Pi down
+/// (Turn off) and rejoining the Wi-Fi (Reconnect), both from Settings.
+pub const PLAYER_SUDOERS: &str = "# Ziggy: the Turn off and Reconnect buttons in Settings.\n\
+    ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n\
+    ziggy-player ALL=(root) NOPASSWD: /usr/bin/nmcli --wait 45 device connect wlan0\n";
 
-/// Installs the sudo rule for Turn off, checked with visudo first. Safe to run again.
-pub fn allow_power_off(r: &dyn Remote) -> anyhow::Result<()> {
-    r.upload(POWER_SUDOERS.as_bytes(), "/tmp/ziggy-power", "440", None)?;
+/// Installs the sudo rules for Turn off and Reconnect, checked with visudo first. Safe to run
+/// again.
+pub fn allow_player_commands(r: &dyn Remote) -> anyhow::Result<()> {
+    r.upload(PLAYER_SUDOERS.as_bytes(), "/tmp/ziggy-power", "440", None)?;
     r.run(
         "sudo visudo -cf /tmp/ziggy-power >/dev/null \
          && sudo install -m 440 /tmp/ziggy-power /etc/sudoers.d/020_ziggy-player-power; \
          rc=$?; sudo rm -f /tmp/ziggy-power; exit $rc",
     )
-    .context("allowing the Turn off button")?;
+    .context("allowing the Turn off and Reconnect buttons")?;
+    Ok(())
+}
+
+/// NetworkManager settings: Wi-Fi power saving off, since it makes a Pi's Wi-Fi drop out, and
+/// warnings only in the log. On a weak signal its routine lines run to tens of thousands a day,
+/// which pushes the player's own out of the capped log.
+pub const WIFI_CONF: &str = "# Ziggy: Wi-Fi power saving off; it makes a Pi's Wi-Fi drop out.\n\
+    [connection]\nwifi.powersave = 2\n\n\
+    # Ziggy: warnings only, so the Wi-Fi doesn't push the player's lines out of the log.\n\
+    [logging]\nlevel = WARN\n";
+
+/// Keeps the Wi-Fi up: power saving off, quieter Wi-Fi logs, and a service that asks
+/// NetworkManager to rejoin once the Wi-Fi has stayed down for 3 minutes. Safe to run again.
+pub fn watch_wifi(r: &dyn Remote) -> anyhow::Result<()> {
+    r.upload(
+        WIFI_WATCH.as_bytes(),
+        "/usr/local/lib/ziggy/wifi-watch",
+        "755",
+        None,
+    )?;
+    r.upload(
+        WIFI_WATCH_SERVICE.as_bytes(),
+        "/etc/systemd/system/ziggy-wifi-watch.service",
+        "644",
+        None,
+    )?;
+    r.upload(
+        WIFI_CONF.as_bytes(),
+        "/etc/NetworkManager/conf.d/80-ziggy-wifi.conf",
+        "644",
+        None,
+    )?;
+    // Neither step drops the connection: the log level changes now, and power saving is off
+    // from the next time the Wi-Fi joins (`iw`, when installed, turns it off now). A restart
+    // picks up a newer check.
+    r.run(
+        "sudo systemctl daemon-reload\n\
+         sudo systemctl enable ziggy-wifi-watch.service\n\
+         sudo systemctl restart ziggy-wifi-watch.service\n\
+         sudo nmcli general reload conf 2>/dev/null || true\n\
+         sudo nmcli general logging level WARN domains ALL 2>/dev/null || true\n\
+         sudo iw dev wlan0 set power_save off 2>/dev/null || true",
+    )
+    .context("setting up the Wi-Fi check")?;
     Ok(())
 }
 
@@ -384,13 +434,38 @@ mod tests {
     }
 
     #[test]
-    fn turn_off_is_the_only_thing_the_player_may_sudo() {
+    fn turn_off_and_reconnect_are_the_only_things_the_player_may_sudo() {
         let r = FakeRemote::default();
-        allow_power_off(&r).unwrap();
+        allow_player_commands(&r).unwrap();
         let rule = r.file("/tmp/ziggy-power").unwrap();
-        assert!(rule.contains("ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff"));
-        assert_eq!(rule.lines().filter(|l| !l.starts_with('#')).count(), 1);
+        assert!(rule.contains("ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n"));
+        assert!(rule.contains(
+            "ziggy-player ALL=(root) NOPASSWD: /usr/bin/nmcli --wait 45 device connect wlan0\n"
+        ));
+        assert_eq!(rule.lines().filter(|l| !l.starts_with('#')).count(), 2);
         assert!(r.all_scripts().contains("visudo -cf /tmp/ziggy-power"));
+    }
+
+    #[test]
+    fn wifi_check_is_installed_and_started() {
+        let r = FakeRemote::default();
+        watch_wifi(&r).unwrap();
+        let script = r.file("/usr/local/lib/ziggy/wifi-watch").unwrap();
+        // The same command Reconnect may sudo.
+        assert!(script.contains("nmcli --wait 45 device connect wlan0"));
+        assert!(PLAYER_SUDOERS.contains("/usr/bin/nmcli --wait 45 device connect wlan0"));
+        assert!(
+            r.file("/etc/systemd/system/ziggy-wifi-watch.service")
+                .is_some()
+        );
+        assert!(
+            r.file("/etc/NetworkManager/conf.d/80-ziggy-wifi.conf")
+                .unwrap()
+                .contains("wifi.powersave = 2")
+        );
+        assert!(WIFI_CONF.contains("[logging]\nlevel = WARN\n"));
+        assert!(r.all_scripts().contains("enable ziggy-wifi-watch.service"));
+        assert!(r.all_scripts().contains("logging level WARN"));
     }
 
     #[test]

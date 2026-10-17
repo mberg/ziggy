@@ -255,6 +255,8 @@ pub fn wire_callbacks(window: &AppWindow, inputs: UnboundedSender<Input>) {
     let s = send.clone();
     window.on_power_off(move || s(UiAction::PowerOff));
     let s = send.clone();
+    window.on_reconnect(move || s(UiAction::Reconnect));
+    let s = send.clone();
     window.on_connect_speaker(move |address| s(UiAction::ConnectSpeaker(address.to_string())));
     let s = send.clone();
     window.on_choose_sonos(move |uuid| s(UiAction::ChooseSonos(uuid.to_string())));

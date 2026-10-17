@@ -117,11 +117,15 @@ pub struct Core {
     /// When recent songs failed to load. The player skips each one by itself, so without a
     /// limit a refused account races through a whole playlist asking Spotify for every song.
     failed_tracks_ms: Vec<u64>,
+    /// When the library was last asked again while offline.
+    offline_retry_ms: u64,
 }
 
 /// This many songs failing within `FAILED_TRACKS_WINDOW_MS` pauses playback.
 const FAILED_TRACKS_LIMIT: usize = 3;
 const FAILED_TRACKS_WINDOW_MS: u64 = 30_000;
+/// While offline with the Wi-Fi up, the library is asked again this often.
+const OFFLINE_RETRY_MS: u64 = 30_000;
 
 impl Core {
     pub fn new(cfg: CoreConfig, now_ms: u64) -> (Core, Vec<Effect>) {
@@ -206,6 +210,7 @@ impl Core {
             listen_mark: None,
             asked_spotify_recent: false,
             failed_tracks_ms: Vec::new(),
+            offline_retry_ms: now_ms,
         };
         let mut fx = Vec::new();
         for section in [Section::Playlists, Section::Albums, Section::Recent] {
@@ -246,7 +251,7 @@ impl Core {
             Input::Books(update) => self.on_books(update, &mut fx),
             Input::Voice(update) => self.on_voice(update, now_ms, &mut fx),
             Input::Temperature(c) => self.state.device.temperature_c = c,
-            Input::Wifi(wifi) => self.state.device.wifi = wifi,
+            Input::Wifi(wifi) => self.on_wifi(wifi, now_ms, &mut fx),
             Input::PairingNeeded(needed) => self.state.pairing_needed = needed,
             Input::SonosRooms(rooms) => {
                 self.state.device.sonos_rooms = rooms;
@@ -1425,6 +1430,12 @@ impl Core {
                     fx.push(Effect::PowerOff);
                 }
             }
+            UiAction::Reconnect => {
+                if !self.state.device.reconnecting {
+                    self.state.device.reconnecting = true;
+                    fx.push(Effect::Reconnect);
+                }
+            }
             UiAction::SetSleepLength(minutes) => {
                 self.state.device.saved.sleep_minutes = Some(minutes);
                 fx.push(Effect::SaveSettings(self.state.device.saved.clone()));
@@ -1682,6 +1693,14 @@ impl Core {
         if self.listened_ms >= self.listened_reported + LISTEN_REPORT_MS {
             self.report_listening(fx);
         }
+        // Offline with the Wi-Fi up (or no Wi-Fi to check, on a computer): Spotify may be
+        // reachable again without anything saying so.
+        if !self.state.online
+            && !matches!(self.state.device.wifi, Some(WifiStatus::Disconnected))
+            && now_ms.saturating_sub(self.offline_retry_ms) >= OFFLINE_RETRY_MS
+        {
+            self.retry_offline(now_ms, fx);
+        }
         // Music keeps the screen awake, except while falling asleep to it.
         if self.state.playback.status == PlayStatus::Playing && self.state.sleep_ends_ms.is_none() {
             self.last_activity_ms = now_ms;
@@ -1919,6 +1938,21 @@ impl Core {
                 shuffle: pb.shuffle,
             }));
         }
+    }
+
+    fn on_wifi(&mut self, wifi: Option<WifiStatus>, now_ms: u64, fx: &mut Vec<Effect>) {
+        let connected = |w: &Option<WifiStatus>| matches!(w, Some(WifiStatus::Connected { .. }));
+        let back = connected(&wifi) && !connected(&self.state.device.wifi);
+        self.state.device.wifi = wifi;
+        if back && !self.state.online {
+            self.retry_offline(now_ms, fx);
+        }
+    }
+
+    /// Asks for the library again after it failed for want of a connection.
+    fn retry_offline(&mut self, now_ms: u64, fx: &mut Vec<Effect>) {
+        self.offline_retry_ms = now_ms;
+        self.refresh_after_reconnect(fx);
     }
 
     fn refresh_after_reconnect(&mut self, fx: &mut Vec<Effect>) {

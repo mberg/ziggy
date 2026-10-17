@@ -180,6 +180,7 @@ export component AppWindow inherits Window {
     callback rename-device();
     callback find-speakers();
     callback power-off();
+    callback reconnect();
     callback connect-speaker(string);
     callback use-jack();
     callback choose-sonos(string);
@@ -341,6 +342,7 @@ export component AppWindow inherits Window {
         rename-device => { root.rename-device(); }
         find-speakers => { root.find-speakers(); }
         power-off => { root.power-off(); }
+        reconnect => { root.reconnect(); }
         connect-speaker(address) => { root.connect-speaker(address); }
         use-jack => { root.use-jack(); }
         forget-speaker => { root.forget-speaker(); }

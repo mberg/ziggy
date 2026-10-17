@@ -417,7 +417,8 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         "Preparing the Pi: packages, the ziggy user and the display. A few minutes the first time…",
     );
     let reboot = install::provision(&ssh)?;
-    install::allow_power_off(&ssh)?;
+    install::allow_player_commands(&ssh)?;
+    install::watch_wifi(&ssh)?;
     ok("Pi prepared");
     say("Installing the player…");
     install::install_player(&ssh, &options.player)?;
@@ -659,7 +660,8 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
         ok("Switched to PipeWire, with the Soloist key copied");
     }
     install::keep_logs(&ssh)?;
-    install::allow_power_off(&ssh)?;
+    install::allow_player_commands(&ssh)?;
+    install::watch_wifi(&ssh)?;
     install::install_service(&ssh)?;
     say("Installing the player…");
     install::install_player(&ssh, &player)?;
