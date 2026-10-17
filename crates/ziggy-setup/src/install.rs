@@ -13,7 +13,6 @@ const PROVISION: &str = include_str!("../../../deploy/provision-remote.sh");
 const SERVICE: &str = include_str!("../../../deploy/ziggy-player.service");
 const WIFI_WATCH: &str = include_str!("../../../deploy/ziggy-wifi-watch");
 const WIFI_WATCH_SERVICE: &str = include_str!("../../../deploy/ziggy-wifi-watch.service");
-const WIFI_WATCH_TIMER: &str = include_str!("../../../deploy/ziggy-wifi-watch.timer");
 const WAKE_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models";
 
 /// Where the player binary comes from.
@@ -203,11 +202,16 @@ pub fn allow_player_commands(r: &dyn Remote) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// NetworkManager settings: Wi-Fi power saving off, since it makes a Pi's Wi-Fi drop out.
-pub const WIFI_CONF: &str = "# Ziggy: Wi-Fi power saving off; it makes a Pi's Wi-Fi drop out.\n[connection]\nwifi.powersave = 2\n";
+/// NetworkManager settings: Wi-Fi power saving off, since it makes a Pi's Wi-Fi drop out, and
+/// warnings only in the log. On a weak signal its routine lines run to tens of thousands a day,
+/// which pushes the player's own out of the capped log.
+pub const WIFI_CONF: &str = "# Ziggy: Wi-Fi power saving off; it makes a Pi's Wi-Fi drop out.\n\
+    [connection]\nwifi.powersave = 2\n\n\
+    # Ziggy: warnings only, so the Wi-Fi doesn't push the player's lines out of the log.\n\
+    [logging]\nlevel = WARN\n";
 
-/// Keeps the Wi-Fi up: power saving off, and a check every 30 s that asks NetworkManager to
-/// rejoin when it has given up. Safe to run again.
+/// Keeps the Wi-Fi up: power saving off, quieter Wi-Fi logs, and a service that asks
+/// NetworkManager to rejoin once the Wi-Fi has stayed down for 3 minutes. Safe to run again.
 pub fn watch_wifi(r: &dyn Remote) -> anyhow::Result<()> {
     r.upload(
         WIFI_WATCH.as_bytes(),
@@ -222,23 +226,20 @@ pub fn watch_wifi(r: &dyn Remote) -> anyhow::Result<()> {
         None,
     )?;
     r.upload(
-        WIFI_WATCH_TIMER.as_bytes(),
-        "/etc/systemd/system/ziggy-wifi-watch.timer",
-        "644",
-        None,
-    )?;
-    r.upload(
         WIFI_CONF.as_bytes(),
         "/etc/NetworkManager/conf.d/80-ziggy-wifi.conf",
         "644",
         None,
     )?;
-    // Reloading the settings doesn't drop the connection; power saving is off from the next
-    // time the Wi-Fi joins, and `iw` (when installed) turns it off now.
+    // Neither step drops the connection: the log level changes now, and power saving is off
+    // from the next time the Wi-Fi joins (`iw`, when installed, turns it off now). A restart
+    // picks up a newer check.
     r.run(
         "sudo systemctl daemon-reload\n\
-         sudo systemctl enable --now ziggy-wifi-watch.timer\n\
+         sudo systemctl enable ziggy-wifi-watch.service\n\
+         sudo systemctl restart ziggy-wifi-watch.service\n\
          sudo nmcli general reload conf 2>/dev/null || true\n\
+         sudo nmcli general logging level WARN domains ALL 2>/dev/null || true\n\
          sudo iw dev wlan0 set power_save off 2>/dev/null || true",
     )
     .context("setting up the Wi-Fi check")?;
@@ -458,18 +459,13 @@ mod tests {
                 .is_some()
         );
         assert!(
-            r.file("/etc/systemd/system/ziggy-wifi-watch.timer")
-                .is_some()
-        );
-        assert!(
             r.file("/etc/NetworkManager/conf.d/80-ziggy-wifi.conf")
                 .unwrap()
                 .contains("wifi.powersave = 2")
         );
-        assert!(
-            r.all_scripts()
-                .contains("enable --now ziggy-wifi-watch.timer")
-        );
+        assert!(WIFI_CONF.contains("[logging]\nlevel = WARN\n"));
+        assert!(r.all_scripts().contains("enable ziggy-wifi-watch.service"));
+        assert!(r.all_scripts().contains("logging level WARN"));
     }
 
     #[test]
