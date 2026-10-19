@@ -267,10 +267,21 @@ pub async fn power_off() {
     }
 }
 
-/// Asks NetworkManager to rejoin the Wi-Fi, waiting up to 45 s. The service user may run
-/// exactly this through sudo (set up by `ziggy setup` and `ziggy update`); on a computer
-/// without it, nothing happens.
+/// Asks NetworkManager to rejoin the Wi-Fi when it's down, waiting up to 45 s. The service
+/// user may run exactly this through sudo (set up by `ziggy setup` and `ziggy update`); on a
+/// computer without it, nothing happens. A connected Wi-Fi is left alone: asking again drops
+/// it to rejoin, and on a weak signal the router can then refuse the Pi for hours.
 pub async fn rejoin_wifi() {
+    let state = tokio::process::Command::new("nmcli")
+        .args(["-t", "-f", "DEVICE,STATE", "device"])
+        .output()
+        .await
+        .map(|out| wlan_state(&String::from_utf8_lossy(&out.stdout)).to_string())
+        .unwrap_or_default();
+    if state != "disconnected" {
+        tracing::info!("not rejoining the Wi-Fi: it's {state:?}");
+        return;
+    }
     tracing::info!("rejoining the Wi-Fi");
     match tokio::process::Command::new("sudo")
         .args([
@@ -291,10 +302,20 @@ pub async fn rejoin_wifi() {
     }
 }
 
+/// wlan0's state in `nmcli -t -f DEVICE,STATE device` output, such as "connected" or
+/// "disconnected"; empty without Wi-Fi.
+fn wlan_state(nmcli: &str) -> &str {
+    nmcli
+        .lines()
+        .find_map(|line| line.strip_prefix("wlan0:"))
+        .unwrap_or_default()
+}
+
 /// Replaces this process with a fresh copy of itself, with the same arguments, so new
 /// settings take effect. Under systemd the service keeps its PID; on a Mac the window reopens.
 pub fn restart() -> ! {
     use std::os::unix::process::CommandExt;
+    stop_other_processes();
     let error = match std::env::current_exe() {
         Ok(exe) => std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
@@ -306,9 +327,88 @@ pub fn restart() -> ! {
     std::process::exit(1)
 }
 
+/// Stops every other process the player's service started: Soloist and its crash reporter.
+/// They would outlive the exec, and the old Soloist keeps its lock on the data directory, so
+/// the new one can't start and nothing plays. Under systemd they all share the service's
+/// cgroup; anywhere else there's nothing to do.
+fn stop_other_processes() {
+    let Some(procs) = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .as_deref()
+        .and_then(service_cgroup)
+        .map(|path| format!("/sys/fs/cgroup{path}/cgroup.procs"))
+    else {
+        return;
+    };
+    let me = std::process::id().to_string();
+    let others = || -> Vec<String> {
+        std::fs::read_to_string(&procs)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter(|pid| *pid != me)
+            .map(str::to_string)
+            .collect()
+    };
+    let signal = |name: &str, pids: &[String]| {
+        let _ = std::process::Command::new("kill")
+            .arg(format!("-{name}"))
+            .args(pids)
+            .status();
+    };
+    let pids = others();
+    if pids.is_empty() {
+        return;
+    }
+    tracing::info!(
+        "stopping {} other process(es) before restarting",
+        pids.len()
+    );
+    signal("TERM", &pids);
+    for _ in 0..30 {
+        if others().is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    signal("KILL", &others());
+}
+
+/// The cgroup of the systemd service this process runs in, from `/proc/self/cgroup`; None
+/// outside a service (on a Mac, or run by hand over SSH).
+fn service_cgroup(proc_self_cgroup: &str) -> Option<&str> {
+    proc_self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .filter(|path| path.ends_with(".service"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wifi_state_is_read_for_wlan0_only() {
+        let nmcli = "wlan0:connected\nlo:connected (externally)\np2p-dev-wlan0:disconnected\n";
+        assert_eq!(wlan_state(nmcli), "connected");
+        assert_eq!(
+            wlan_state("p2p-dev-wlan0:disconnected\nwlan0:disconnected\n"),
+            "disconnected"
+        );
+        assert_eq!(wlan_state("lo:connected (externally)\n"), "");
+    }
+
+    #[test]
+    fn only_a_service_cgroup_is_cleared_before_restarting() {
+        assert_eq!(
+            service_cgroup("0::/system.slice/ziggy-player.service\n"),
+            Some("/system.slice/ziggy-player.service")
+        );
+        assert_eq!(
+            service_cgroup("0::/user.slice/user-1000.slice/session-3.scope\n"),
+            None
+        );
+        assert_eq!(service_cgroup(""), None);
+    }
 
     #[test]
     fn the_network_in_use_is_found_with_its_band() {
