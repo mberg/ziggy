@@ -8,8 +8,6 @@ REPO=mberg/ziggy
 case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) name=ziggy-macos-arm64 ;;
     Darwin-x86_64) name=ziggy-macos-x86_64 ;;
-    Linux-x86_64) name=ziggy-linux-x86_64 ;;
-    Linux-aarch64 | Linux-arm64) name=ziggy-linux-arm64 ;;
     *)
         echo "Sorry, there's no ziggy for $(uname -s) $(uname -m) yet." >&2
         exit 1

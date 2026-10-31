@@ -13,7 +13,7 @@ A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotif
 - A Raspberry Pi 3 A+ or newer, with the official 7" touchscreen, a power supply and a microSD card (8 GB or more).
 - Speakers or headphones: the Pi's headphone jack, a Bluetooth speaker, or a Sonos system.
 - A Spotify Premium account for each person.
-- A Mac or Linux computer to run setup from, on the same Wi-Fi as the Pi.
+- A Mac to run setup from, on the same Wi-Fi as the Pi.
 - Optional: a USB microphone for voice control, and a Google Cloud project or Gemini API key for it.
 
 ## Get started
@@ -173,4 +173,4 @@ cargo run -p ziggy-setup --bin ziggy -- update ziggy-kitchen.local \
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-The release workflow builds the Pi player and `ziggy` for Macs and Linux, then publishes them as a GitHub release. `install.sh`, `ziggy setup` and `ziggy update` all use the newest release.
+The release workflow builds the Pi player and `ziggy` for Macs, then publishes them as a GitHub release. `install.sh`, `ziggy setup` and `ziggy update` all use the newest release.
