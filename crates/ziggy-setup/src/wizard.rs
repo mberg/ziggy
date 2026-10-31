@@ -491,7 +491,9 @@ pub fn config(host: &str) -> anyhow::Result<()> {
     let mut t = install::read_config(&ssh)?
         .context("this Pi has no Ziggy settings yet; run `ziggy setup` first")?;
     let mut key_to_copy: Option<PathBuf> = None;
-    let mut ha_token: Option<PathBuf> = None;
+    // Kept in memory only, until it's copied to the player.
+    let mut ha_token: Option<String> = None;
+    let mut remove_ha_token = false;
     let mut model_needed = false;
     let mut changed = false;
     loop {
@@ -514,9 +516,6 @@ pub fn config(host: &str) -> anyhow::Result<()> {
             break;
         }
         if pick > Setting::ALL.len() {
-            if let Some(token) = &ha_token {
-                let _ = std::fs::remove_file(token);
-            }
             say("Nothing saved.");
             return Ok(());
         }
@@ -554,7 +553,10 @@ pub fn config(host: &str) -> anyhow::Result<()> {
             Setting::HomeAssistant => {
                 if t.contains_key("home_assistant") && yes("Turn Home Assistant off?", false)? {
                     devconfig::home_assistant_off(&mut t);
+                    ha_token = None;
+                    remove_ha_token = true;
                 } else {
+                    remove_ha_token = false;
                     let current = t
                         .get("home_assistant")
                         .and_then(|h| h.get("url"))
@@ -577,15 +579,20 @@ pub fn config(host: &str) -> anyhow::Result<()> {
                         "In Home Assistant, make a non-admin user for Ziggy, sign in as it, and create a\n\
                          long-lived access token under its profile → Security.",
                     );
-                    let token: String = Password::with_theme(&theme())
-                        .with_prompt("Access token (empty keeps the one on the player)")
-                        .allow_empty_password(true)
-                        .interact()?;
-                    if !token.trim().is_empty() {
-                        // In the device's private folder until it's copied to the player.
-                        let file = store::device_dir(&ssh.host)?.join("ha-token");
-                        std::fs::write(&file, token.trim())?;
-                        ha_token = Some(file);
+                    loop {
+                        let token: String = Password::with_theme(&theme())
+                            .with_prompt("Access token (empty keeps the one on the player)")
+                            .allow_empty_password(true)
+                            .interact()?;
+                        let token = token.trim();
+                        if !token.is_empty() {
+                            ha_token = Some(token.to_string());
+                            break;
+                        }
+                        if ha_token.is_some() || install::has_ha_token(&ssh) {
+                            break;
+                        }
+                        say("The player has no token yet; paste the one from Home Assistant.");
                     }
                     if !t["home_assistant"]
                         .as_table()
@@ -671,9 +678,8 @@ pub fn config(host: &str) -> anyhow::Result<()> {
             },
         )?;
     }
-    // The player keeps the token; this computer doesn't need it.
-    if let Some(token) = &ha_token {
-        let _ = std::fs::remove_file(token);
+    if remove_ha_token {
+        install::remove_ha_token(&ssh)?;
     }
     install::write_config(&ssh, &t)?;
     say("Saved. Restarting the player…");
@@ -698,11 +704,11 @@ fn find_home_assistant(wait: Duration) -> Option<String> {
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         match events.recv_timeout(left) {
             Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => {
-                found = ["internal_url", "base_url"]
+                let txt = ["internal_url", "base_url"]
                     .iter()
-                    .find_map(|k| info.get_property_val_str(k))
-                    .filter(|u| u.starts_with("http://"))
-                    .map(|u| u.trim_end_matches('/').to_string());
+                    .filter_map(|k| info.get_property_val_str(k));
+                let v4 = info.get_addresses_v4().into_iter().min();
+                found = home_assistant_url(txt, v4, info.get_port());
                 if found.is_some() {
                     break;
                 }
@@ -713,6 +719,17 @@ fn find_home_assistant(wait: Duration) -> Option<String> {
     }
     let _ = mdns.shutdown();
     found
+}
+
+/// The first http:// URL Home Assistant announces, or else its address and port.
+fn home_assistant_url<'a>(
+    mut txt: impl Iterator<Item = &'a str>,
+    v4: Option<std::net::Ipv4Addr>,
+    port: u16,
+) -> Option<String> {
+    txt.find(|u| u.starts_with("http://"))
+        .map(|u| u.trim_end_matches('/').to_string())
+        .or_else(|| v4.map(|ip| format!("http://{ip}:{port}")))
 }
 
 fn connect(host: &str) -> anyhow::Result<Ssh> {
@@ -861,6 +878,25 @@ mod tests {
         assert_eq!(name_from_host("ziggy-kitchen.local"), "Kitchen");
         assert_eq!(name_from_host("pi@den.local"), "Den");
         assert_eq!(name_from_host("192.168.1.20"), "192");
+    }
+
+    #[test]
+    fn home_assistant_is_found_by_its_url_or_else_its_address() {
+        let ip = Some(std::net::Ipv4Addr::new(192, 168, 1, 69));
+        assert_eq!(
+            home_assistant_url(
+                ["https://ha.example.com", "http://ha.local:8123/"].into_iter(),
+                ip,
+                8123
+            )
+            .as_deref(),
+            Some("http://ha.local:8123")
+        );
+        assert_eq!(
+            home_assistant_url(["https://ha.example.com"].into_iter(), ip, 8123).as_deref(),
+            Some("http://192.168.1.69:8123")
+        );
+        assert_eq!(home_assistant_url(std::iter::empty(), None, 8123), None);
     }
 
     #[test]
