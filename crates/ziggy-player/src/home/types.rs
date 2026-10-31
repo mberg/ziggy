@@ -90,6 +90,106 @@ pub fn brightness_of(percent: u8) -> u8 {
     ((u32::from(percent.min(100)) * 255 + 50) / 100) as u8
 }
 
+/// Subscribed entities in Home Assistant's own form, so its change events can be applied.
+#[derive(Debug, Default)]
+pub struct States {
+    raw: HashMap<String, (String, Map<String, Value>)>,
+}
+
+impl States {
+    /// Applies one `subscribe_entities` event. Gives back the entities that changed, with their
+    /// new states, and the ones removed.
+    pub fn apply(&mut self, event: &Value) -> (Vec<(String, EntityState)>, Vec<String>) {
+        let mut changed: Vec<String> = Vec::new();
+        if let Some(added) = event.get("a").and_then(Value::as_object) {
+            for (id, v) in added {
+                let state = v.get("s").and_then(Value::as_str).unwrap_or("unknown");
+                let attrs = v.get("a").and_then(Value::as_object).cloned().unwrap_or_default();
+                self.raw.insert(id.clone(), (state.to_string(), attrs));
+                changed.push(id.clone());
+            }
+        }
+        if let Some(diffs) = event.get("c").and_then(Value::as_object) {
+            for (id, diff) in diffs {
+                let Some((state, attrs)) = self.raw.get_mut(id) else {
+                    continue;
+                };
+                if let Some(plus) = diff.get("+") {
+                    if let Some(s) = plus.get("s").and_then(Value::as_str) {
+                        *state = s.to_string();
+                    }
+                    if let Some(more) = plus.get("a").and_then(Value::as_object) {
+                        for (k, v) in more {
+                            attrs.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                let gone = diff.get("-").and_then(|m| m.get("a")).and_then(Value::as_array);
+                for key in gone.into_iter().flatten().filter_map(Value::as_str) {
+                    attrs.remove(key);
+                }
+                changed.push(id.clone());
+            }
+        }
+        let removed: Vec<String> = event
+            .get("r")
+            .and_then(Value::as_array)
+            .map(|r| r.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        for id in &removed {
+            self.raw.remove(id);
+        }
+        let changed = changed
+            .into_iter()
+            .filter_map(|id| self.get(&id).map(|s| (id, s)))
+            .collect();
+        (changed, removed)
+    }
+
+    pub fn get(&self, id: &str) -> Option<EntityState> {
+        let (state, attrs) = self.raw.get(id)?;
+        Some(EntityState {
+            state: state.clone(),
+            name: attrs.get("friendly_name").and_then(Value::as_str).map(str::to_string),
+            brightness: attrs
+                .get("brightness")
+                .and_then(Value::as_u64)
+                .map(|b| b.min(255) as u8),
+        })
+    }
+
+    /// Every entity's state, to keep for the next start.
+    pub fn snapshot(&self) -> Vec<(String, EntityState)> {
+        self.raw.keys().filter_map(|id| self.get(id).map(|s| (id.clone(), s))).collect()
+    }
+}
+
+/// Each entity's area name: its own area, else its device's. Takes the results of
+/// `config/entity_registry/list_for_display`, `config/device_registry/list` and
+/// `config/area_registry/list`; any of them may be `Null` when Ziggy wasn't allowed to read it.
+pub fn area_names(entities: &Value, devices: &Value, areas: &Value) -> HashMap<String, String> {
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let area_name: HashMap<String, String> = list(areas)
+        .iter()
+        .filter_map(|a| Some((a["area_id"].as_str()?.to_string(), a["name"].as_str()?.to_string())))
+        .collect();
+    let device_area: HashMap<String, String> = list(devices)
+        .iter()
+        .filter_map(|d| Some((d["id"].as_str()?.to_string(), d["area_id"].as_str()?.to_string())))
+        .collect();
+    list(&entities["entities"])
+        .iter()
+        .filter_map(|e| {
+            let id = e["ei"].as_str()?;
+            let area = match e["ai"].as_str() {
+                Some(area) => area.to_string(),
+                None => device_area.get(e["di"].as_str()?)?.clone(),
+            };
+            Some((id.to_string(), area_name.get(&area)?.clone()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +214,64 @@ mod tests {
         assert_eq!(on(1).percent(), Some(1), "a lit light never reads 0%");
         assert_eq!(brightness_of(70), 179);
         assert_eq!(brightness_of(100), 255);
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn first_event_adds_and_changes_merge() {
+        let mut states = States::default();
+        let (changed, removed) = states.apply(&json!({"a": {
+            "light.desk": {"s": "on", "a": {"friendly_name": "Desk lamp", "brightness": 178}},
+            "switch.fan": {"s": "off", "a": {"friendly_name": "Fan"}}
+        }}));
+        assert_eq!(changed.len(), 2);
+        assert!(removed.is_empty());
+        let desk = changed.iter().find(|(id, _)| id == "light.desk").unwrap();
+        assert_eq!(desk.1, EntityState { state: "on".into(), name: Some("Desk lamp".into()), brightness: Some(178) });
+
+        // Turning off: the state changes and brightness is taken away.
+        let (changed, _) = states.apply(&json!({"c": {
+            "light.desk": {"+": {"s": "off"}, "-": {"a": ["brightness"]}}
+        }}));
+        assert_eq!(changed, vec![("light.desk".to_string(), EntityState {
+            state: "off".into(), name: Some("Desk lamp".into()), brightness: None })]);
+
+        // Dimming changes only an attribute.
+        let (changed, _) = states.apply(&json!({"c": {
+            "light.desk": {"+": {"s": "on", "a": {"brightness": 26}}}
+        }}));
+        assert_eq!(changed[0].1.percent(), Some(10));
+    }
+
+    #[test]
+    fn removed_entities_are_reported_and_unknown_changes_ignored() {
+        let mut states = States::default();
+        states.apply(&json!({"a": {"light.desk": {"s": "on", "a": {}}}}));
+        let (changed, removed) = states.apply(&json!({"c": {"light.other": {"+": {"s": "on"}}}, "r": ["light.desk"]}));
+        assert!(changed.is_empty());
+        assert_eq!(removed, vec!["light.desk".to_string()]);
+        assert!(states.snapshot().is_empty());
+    }
+
+    #[test]
+    fn areas_come_from_the_entity_or_else_its_device() {
+        let entities = json!({"entities": [
+            {"ei": "light.desk", "ai": "micah", "di": "d1"},
+            {"ei": "light.porch", "di": "d2"},
+            {"ei": "light.loose"}
+        ]});
+        let devices = json!([{"id": "d1", "area_id": "kitchen"}, {"id": "d2", "area_id": "outside"}]);
+        let areas = json!([
+            {"area_id": "micah", "name": "Micah's room"},
+            {"area_id": "outside", "name": "Outside"},
+            {"area_id": "kitchen", "name": "Kitchen"}
+        ]);
+        let names = area_names(&entities, &devices, &areas);
+        assert_eq!(names.get("light.desk").map(String::as_str), Some("Micah's room"));
+        assert_eq!(names.get("light.porch").map(String::as_str), Some("Outside"));
+        assert_eq!(names.get("light.loose"), None);
+        // A registry Ziggy wasn't allowed to read gives no areas, not an error.
+        assert!(area_names(&Value::Null, &devices, &areas).is_empty());
     }
 }
