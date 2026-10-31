@@ -261,7 +261,7 @@ pub fn check(t: &Table) -> anyhow::Result<()> {
         anyhow::ensure!(
             url.strip_prefix("http://")
                 .is_some_and(|host| !host.trim_matches('/').is_empty()),
-            "Home Assistant needs its local http:// address, like http://192.168.1.69:8123"
+            "Home Assistant needs its local http:// address, like http://bergmini.local:8123"
         );
     }
     Ok(())

@@ -67,7 +67,8 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomeAssistantConfig {
-    /// The local address, e.g. "http://192.168.1.69:8123".
+    /// The local address, best by name so a new router doesn't break it, e.g.
+    /// "http://bergmini.local:8123".
     pub url: String,
     /// A file holding a long-lived access token; `<state_dir>/ha-token` by default.
     #[serde(default)]

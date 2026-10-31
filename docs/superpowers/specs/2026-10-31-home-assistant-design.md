@@ -41,7 +41,7 @@ Home is on when the config has a `[home_assistant]` section.
 
 ```toml
 [home_assistant]
-url = "http://192.168.1.69:8123"
+url = "http://bergmini.local:8123"
 token_file = "/var/lib/ziggy/ha-token"   # default: <state_dir>/ha-token
 
 [[home_assistant.page]]
@@ -64,7 +64,9 @@ controls = ["light.porch", "light.hall", "light.kitchen",
 - `ziggy config` asks for the URL (offering the instance it finds over mDNS) and the token, and
   copies the token to the player like the other sign-ins. Pages are written in the config file;
   with no pages, Home stays off.
-- The URL must be `http://`, the local address; Ziggy doesn't do TLS to Home Assistant.
+- The URL must be `http://`, the local address; Ziggy doesn't do TLS to Home Assistant. A `.local`
+  name is better than an IP address, which a new router changes. `ziggy config` offers a URL
+  Home Assistant announces with a name in it, else its mDNS name, before falling back to an address.
 
 ## Screen
 
