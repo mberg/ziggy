@@ -114,12 +114,12 @@ A player can switch and dim Home Assistant lights, turn switches and fans on and
 
 1. **Make a user for Ziggy.** In Home Assistant, go to Settings → People and add a person called "Ziggy". Turn on "Allow person to login" and leave "Administrator" off.
 2. **Create a token.** Sign in to Home Assistant as that user. Open its profile, then the Security tab, and create a long-lived access token. Copy it; Home Assistant shows it only once.
-3. **Run `ziggy config ziggy-kitchen.local`** and pick Home Assistant. It offers the address it finds on your network, then asks for the token and copies it to the player. Use the local `http://` address, such as `http://192.168.1.69:8123`.
+3. **Run `ziggy config ziggy-kitchen.local`** and pick Home Assistant. It offers the address it finds on your network, then asks for the token and copies it to the player. Use a local `http://` address with a name, such as `http://bergmini.local:8123`, rather than an IP address: a new router hands out new IP addresses, but the name stays the same.
 4. **Add pages** to `/etc/ziggy/config.toml` on the Pi (`ssh ziggy-kitchen.local`, then `sudo nano /etc/ziggy/config.toml`). Each page has a name and a list of controls:
 
    ```toml
    [home_assistant]
-   url = "http://192.168.1.69:8123"
+   url = "http://bergmini.local:8123"
 
    [[home_assistant.page]]
    name = "Living room"

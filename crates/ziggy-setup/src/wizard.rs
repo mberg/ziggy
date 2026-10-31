@@ -708,7 +708,7 @@ fn find_home_assistant(wait: Duration) -> Option<String> {
                     .iter()
                     .filter_map(|k| info.get_property_val_str(k));
                 let v4 = info.get_addresses_v4().into_iter().min();
-                found = home_assistant_url(txt, v4, info.get_port());
+                found = home_assistant_url(Some(info.get_hostname()), txt, v4, info.get_port());
                 if found.is_some() {
                     break;
                 }
@@ -721,14 +721,32 @@ fn find_home_assistant(wait: Duration) -> Option<String> {
     found
 }
 
-/// The first http:// URL Home Assistant announces, or else its address and port.
+/// A URL for Home Assistant that keeps working when the router hands out new addresses: an
+/// http:// URL it announces with a name in it, else its mDNS name, else an announced URL or its
+/// address.
 fn home_assistant_url<'a>(
-    mut txt: impl Iterator<Item = &'a str>,
+    host: Option<&str>,
+    txt: impl Iterator<Item = &'a str>,
     v4: Option<std::net::Ipv4Addr>,
     port: u16,
 ) -> Option<String> {
-    txt.find(|u| u.starts_with("http://"))
+    let urls: Vec<String> = txt
+        .filter(|u| u.starts_with("http://"))
         .map(|u| u.trim_end_matches('/').to_string())
+        .collect();
+    let named = |u: &&String| {
+        let host = u["http://".len()..].split([':', '/']).next().unwrap_or("");
+        host.parse::<std::net::IpAddr>().is_err()
+    };
+    let mdns = host
+        .map(|h| h.trim_end_matches('.'))
+        .filter(|h| h.ends_with(".local"))
+        .map(|h| format!("http://{h}:{port}"));
+    urls.iter()
+        .find(named)
+        .cloned()
+        .or(mdns)
+        .or_else(|| urls.first().cloned())
         .or_else(|| v4.map(|ip| format!("http://{ip}:{port}")))
 }
 
@@ -881,22 +899,33 @@ mod tests {
     }
 
     #[test]
-    fn home_assistant_is_found_by_its_url_or_else_its_address() {
+    fn home_assistant_is_found_by_a_name_before_an_address() {
         let ip = Some(std::net::Ipv4Addr::new(192, 168, 1, 69));
+        let mdns = Some("6bc185ba.local.");
+        let url =
+            |host, txt: &[&'static str]| home_assistant_url(host, txt.iter().copied(), ip, 8123);
         assert_eq!(
-            home_assistant_url(
-                ["https://ha.example.com", "http://ha.local:8123/"].into_iter(),
-                ip,
-                8123
-            )
-            .as_deref(),
-            Some("http://ha.local:8123")
+            url(mdns, &["https://ha.example.com", "http://ha.local:8123/"]).as_deref(),
+            Some("http://ha.local:8123"),
+            "an announced URL with a name"
         );
         assert_eq!(
-            home_assistant_url(["https://ha.example.com"].into_iter(), ip, 8123).as_deref(),
+            url(mdns, &["http://192.168.1.69:8123"]).as_deref(),
+            Some("http://6bc185ba.local:8123"),
+            "its mDNS name rather than an address, which a new router changes"
+        );
+        assert_eq!(
+            url(None, &["http://192.168.1.69:8123"]).as_deref(),
             Some("http://192.168.1.69:8123")
         );
-        assert_eq!(home_assistant_url(std::iter::empty(), None, 8123), None);
+        assert_eq!(
+            url(None, &["https://ha.example.com"]).as_deref(),
+            Some("http://192.168.1.69:8123")
+        );
+        assert_eq!(
+            home_assistant_url(None, std::iter::empty(), None, 8123),
+            None
+        );
     }
 
     #[test]

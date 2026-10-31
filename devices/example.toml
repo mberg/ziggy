@@ -24,7 +24,7 @@ off_after_secs = 600
 # Home Assistant controls on a Home screen. The token (a non-admin user's long-lived access token)
 # is read from <state_dir>/ha-token; `ziggy config` copies it there.
 # [home_assistant]
-# url = "http://192.168.1.69:8123"
+# url = "http://bergmini.local:8123"   # a .local name keeps working when the router changes
 # [[home_assistant.page]]
 # name = "Living room"
 # controls = ["light.ceiling", { entity = "light.desk", name = "Desk lamp" }, "switch.fairy_lights", "scene.evening"]
