@@ -710,6 +710,7 @@ fn home_tile_data(t: &view::HomeTileView) -> HomeTileData {
             HomeIcon::Light => 0,
             HomeIcon::Plug => 1,
             HomeIcon::Fan => 2,
+            HomeIcon::Group => 3,
         },
         on: t.on,
         split: t.split,

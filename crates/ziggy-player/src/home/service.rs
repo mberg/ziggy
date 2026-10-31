@@ -347,6 +347,8 @@ async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceive
                     state: state.to_string(),
                     name: Some(name.to_string()),
                     brightness: *b,
+                    // The ceiling light is a group, so `--fake` shows one.
+                    members: if *id == "light.bedroom_ceiling" { 2 } else { 0 },
                 },
             )
         })

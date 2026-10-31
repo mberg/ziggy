@@ -74,6 +74,8 @@ pub struct EntityState {
     pub name: Option<String>,
     /// 0-255, while a light is on.
     pub brightness: Option<u8>,
+    /// How many lights a light group has; 0 for a single entity.
+    pub members: u16,
 }
 
 impl EntityState {
@@ -179,6 +181,11 @@ impl States {
                 .get("brightness")
                 .and_then(Value::as_u64)
                 .map(|b| b.min(255) as u8),
+            // Groups list their members in `entity_id`.
+            members: attrs
+                .get("entity_id")
+                .and_then(Value::as_array)
+                .map_or(0, |m| m.len().min(usize::from(u16::MAX)) as u16),
         })
     }
 }
@@ -279,6 +286,7 @@ mod tests {
             state: "on".into(),
             name: None,
             brightness: Some(b),
+            members: 0,
         };
         assert_eq!(on(255).percent(), Some(100));
         assert_eq!(on(178).percent(), Some(70));
@@ -302,7 +310,8 @@ mod tests {
             EntityState {
                 state: "on".into(),
                 name: Some("Desk lamp".into()),
-                brightness: Some(178)
+                brightness: Some(178),
+                members: 0,
             }
         );
 
@@ -317,7 +326,8 @@ mod tests {
                 EntityState {
                     state: "off".into(),
                     name: Some("Desk lamp".into()),
-                    brightness: None
+                    brightness: None,
+                    members: 0,
                 }
             )]
         );
@@ -411,11 +421,29 @@ mod tests {
     }
 
     #[test]
+    fn a_group_counts_its_members() {
+        let mut states = States::default();
+        states.apply(&json!({"a": {
+            "light.mud_room": {"s": "on", "a": {
+                "friendly_name": "Mud room",
+                "is_hue_group": true,
+                "hue_type": "room",
+                "entity_id": ["light.hue_white_lamp_1", "light.hue_white_lamp_1_2",
+                              "light.mud_4", "light.mud_3"]
+            }},
+            "light.mud_3": {"s": "on", "a": {"friendly_name": "Mud 3"}}
+        }}));
+        assert_eq!(states.get("light.mud_room").unwrap().members, 4);
+        assert_eq!(states.get("light.mud_3").unwrap().members, 0);
+    }
+
+    #[test]
     fn unknown_still_counts_as_available() {
         let state = |s: &str| EntityState {
             state: s.into(),
             name: None,
             brightness: None,
+            members: 0,
         };
         assert!(state("unknown").available());
         assert!(!state("unavailable").available());

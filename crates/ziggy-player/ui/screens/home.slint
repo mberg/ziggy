@@ -30,7 +30,7 @@ component HomeTile inherits Rectangle {
         padding-left: 14px;
         alignment: space-between;
         Image {
-            source: root.data.icon == 1 ? @image-url("../icons/plug.svg") : root.data.icon == 2 ? @image-url("../icons/fan.svg") : @image-url("../icons/bulb.svg");
+            source: root.data.icon == 1 ? @image-url("../icons/plug.svg") : root.data.icon == 2 ? @image-url("../icons/fan.svg") : root.data.icon == 3 ? @image-url("../icons/bulbs.svg") : @image-url("../icons/bulb.svg");
             width: 30px;
             height: 30px;
             colorize: root.fg;

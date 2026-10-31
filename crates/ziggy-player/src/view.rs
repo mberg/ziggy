@@ -130,7 +130,8 @@ pub struct HomeView {
 pub struct HomeTileView {
     pub id: String,
     pub name: String,
-    /// Under the name: the room on a mixed page, the state of a switch, or why it can't be used.
+    /// Under the name: the room on a mixed page, the state of a switch, a group's size, or why
+    /// it can't be used.
     pub line: String,
     pub icon: HomeIcon,
     pub on: bool,
@@ -149,6 +150,8 @@ pub enum HomeIcon {
     Light,
     Plug,
     Fan,
+    /// A light group.
+    Group,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,12 +235,17 @@ fn home(state: &AppState) -> HomeView {
         .filter_map(|c| h.areas.get(&c.entity_id))
         .collect();
     let mixed = rooms.len() > 1;
-    let tiles = page
+    let mut tiles: Vec<HomeTileView> = page
         .tiles
         .iter()
         .map(|c| {
             let state = h.entities.get(&c.entity_id);
             let light = c.domain == Domain::Light;
+            let members = if light {
+                state.map_or(0, |s| s.members)
+            } else {
+                0
+            };
             let room = if mixed {
                 h.areas.get(&c.entity_id).cloned()
             } else {
@@ -252,8 +260,14 @@ fn home(state: &AppState) -> HomeView {
             // Only what Home Assistant can confirm right now shows as on.
             let shown = enabled && state.is_some_and(|s| s.is_on());
             let words = if shown { "On" } else { "Off" };
+            let count = match members {
+                1 => "1 light".to_string(),
+                n => format!("{n} lights"),
+            };
             let line = match room {
                 _ if !line.is_empty() => line,
+                Some(r) if members > 0 => format!("{r} · {count}"),
+                None if members > 0 => count,
                 room if light || !enabled => room.unwrap_or_default(),
                 Some(r) => format!("{r} · {words}"),
                 None => words.into(),
@@ -264,6 +278,7 @@ fn home(state: &AppState) -> HomeView {
                 name: name_of(c),
                 line,
                 icon: match c.domain {
+                    _ if members > 0 => HomeIcon::Group,
                     Domain::Fan => HomeIcon::Fan,
                     Domain::Switch => HomeIcon::Plug,
                     _ => HomeIcon::Light,
@@ -281,6 +296,8 @@ fn home(state: &AppState) -> HomeView {
             }
         })
         .collect();
+    // Groups first; otherwise the config's order.
+    tiles.sort_by_key(|t| t.icon != HomeIcon::Group);
     let scenes = page
         .scenes
         .iter()
@@ -1841,6 +1858,7 @@ mod tests {
                                     state: s.to_string(),
                                     name: Some(name.to_string()),
                                     brightness: *b,
+                                    members: 0,
                                 },
                             )
                         })
@@ -2113,6 +2131,83 @@ mod tests {
                 v.home.tiles[0].name, "Master Bedroom Lamp",
                 "tiles keep the whole name"
             );
+        }
+
+        /// Makes an entity a light group of `members`.
+        fn group(core: &mut crate::app::Core, id: &str, name: &str, members: u16) {
+            core.handle(
+                Input::Home(HomeUpdate::States(vec![(
+                    id.to_string(),
+                    EntityState {
+                        state: "on".into(),
+                        name: Some(name.into()),
+                        brightness: Some(255),
+                        members,
+                    },
+                )])),
+                0,
+            );
+        }
+
+        #[test]
+        fn light_groups_show_as_groups_first_on_the_page() {
+            let mut core = core_with(page(
+                &["light.desk", "switch.fan", "light.mud_room", "light.hall"],
+                &[],
+            ));
+            states(
+                &mut core,
+                &[
+                    ("light.desk", "Desk", "off", None),
+                    ("switch.fan", "Fan", "off", None),
+                ],
+            );
+            group(&mut core, "light.mud_room", "Mud room", 4);
+            group(&mut core, "light.hall", "Hall", 2);
+            let v = build(core.state());
+            let ids: Vec<&str> = v.home.tiles.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["light.mud_room", "light.hall", "light.desk", "switch.fan"],
+                "groups first, otherwise the config's order"
+            );
+            let mud = &v.home.tiles[0];
+            assert_eq!(mud.icon, HomeIcon::Group);
+            assert_eq!(
+                (mud.line.as_str(), mud.split, mud.strip.as_str(), mud.on),
+                ("4 lights", true, "100%", true)
+            );
+            assert_eq!(v.home.tiles[1].line, "2 lights");
+            assert_eq!(v.home.tiles[2].icon, HomeIcon::Light);
+            assert_eq!(v.home.tiles[2].line, "");
+        }
+
+        #[test]
+        fn a_group_on_a_mixed_page_shows_its_room() {
+            let mut core = core_with(page(&["light.porch", "light.mud_room"], &[]));
+            states(&mut core, &[("light.porch", "Porch", "off", None)]);
+            group(&mut core, "light.mud_room", "Mud room", 4);
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [
+                        ("light.porch".to_string(), "Outside".to_string()),
+                        ("light.mud_room".to_string(), "Mud room".to_string()),
+                    ]
+                    .into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[0].line, "Mud room · 4 lights");
+            assert_eq!(v.home.tiles[1].line, "Outside");
+        }
+
+        #[test]
+        fn before_home_assistant_answers_a_group_is_a_light() {
+            let core = connecting(page(&["light.desk", "light.mud_room"], &[]));
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[1].icon, HomeIcon::Light);
+            assert_eq!(v.home.tiles[1].id, "light.mud_room");
         }
 
         #[test]

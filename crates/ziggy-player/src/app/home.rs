@@ -249,6 +249,7 @@ impl Core {
             state: String::new(),
             name: None,
             brightness: None,
+            members: 0,
         });
         state.state = if on { "on" } else { "off" }.into();
         state.brightness = match (Domain::of(id) == Some(Domain::Light) && on, pct) {
@@ -295,6 +296,7 @@ mod tests {
                     state: state.into(),
                     name: None,
                     brightness,
+                    members: 0,
                 },
             )])),
             0,
