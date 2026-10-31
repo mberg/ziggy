@@ -1528,15 +1528,32 @@ impl Core {
                     self.state.playback.status = PlayStatus::Paused;
                 }
             }
-            PlayerUpdate::TrackChanged(track) => {
-                self.log_track(&track, now_ms, fx);
+            PlayerUpdate::TrackChanged(mut track) => {
+                // Soloist can announce a song before it has its name and cover; they follow.
+                let shown = self
+                    .state
+                    .playback
+                    .track
+                    .as_ref()
+                    .filter(|t| t.uri == track.uri);
+                if let Some(shown) = shown.filter(|t| track.name.is_empty() && !t.name.is_empty()) {
+                    track = shown.clone();
+                }
+                let details_came =
+                    shown.is_some_and(|t| t.name.is_empty()) && !track.name.is_empty();
+                // A song is kept in the history once its name is known.
+                if !track.name.is_empty() {
+                    self.log_track(&track, now_ms, fx);
+                }
                 if !self.knows_saved(&track.uri) {
                     fx.push(Effect::Library(LibraryRequest::IsLiked {
                         track_uri: track.uri.clone(),
                     }));
                 }
                 self.state.playback.track = Some(track);
-                self.state.playback.position_ms = 0;
+                if !details_came {
+                    self.state.playback.position_ms = 0;
+                }
             }
             PlayerUpdate::Loading => self.state.playback.status = PlayStatus::Loading,
             PlayerUpdate::Playing { position_ms } => {

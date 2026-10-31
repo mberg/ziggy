@@ -226,6 +226,9 @@ async fn serve(
                     return Ok(Exit::SignInFailed);
                 }
                 session.give_up_skipping(now);
+                if session.details_due(now) {
+                    frames.push(protocol::command("get_state"));
+                }
                 if session.skipping.is_none()
                     && let Some(position_ms) = session.position_now(now)
                 {
@@ -330,6 +333,13 @@ async fn serve(
 /// stream of volumes, and late echoes would pull it back.
 const VOLUME_ECHO: Duration = Duration::from_millis(1500);
 
+/// After a song arrives without its name, Soloist is asked for it again after these waits.
+const DETAILS_RETRIES: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(3),
+];
+
 /// What the engine remembers between frames.
 #[derive(Default)]
 struct Session {
@@ -349,6 +359,8 @@ struct Session {
     skipping: Option<(Option<String>, u8, std::time::Instant)>,
     /// Frames to send after an event, such as the volume put back once the song is reached.
     outbox: Vec<Value>,
+    /// A song that came without its name: when to ask for it again, and how many times so far.
+    details: Option<(String, std::time::Instant, usize)>,
 }
 
 /// Starting a list.
@@ -387,6 +399,12 @@ impl Session {
             PlayerUpdate::TrackChanged(t) => {
                 self.current_uri = Some(t.uri.clone());
                 self.anchor = Some((0, now, self.speed()));
+                let waiting = self.details.as_ref().is_some_and(|(uri, ..)| *uri == t.uri);
+                if !t.name.is_empty() {
+                    self.details = None;
+                } else if !waiting {
+                    self.details = Some((t.uri.clone(), now + DETAILS_RETRIES[0], 0));
+                }
             }
             PlayerUpdate::Volume { percent } => {
                 if self
@@ -402,6 +420,22 @@ impl Session {
                 self.anchor = Some((self.position_at(now), now, 0.0));
             }
             _ => {}
+        }
+        true
+    }
+
+    /// True when it's time to ask Soloist again for a song's name and cover.
+    fn details_due(&mut self, now: std::time::Instant) -> bool {
+        let Some((uri, at, tries)) = self.details.take() else {
+            return false;
+        };
+        if now < at {
+            self.details = Some((uri, at, tries));
+            return false;
+        }
+        let tries = tries + 1;
+        if let Some(wait) = DETAILS_RETRIES.get(tries) {
+            self.details = Some((uri, now + *wait, tries));
         }
         true
     }
@@ -853,5 +887,37 @@ mod tests {
             std::time::Instant::now(),
         );
         assert_eq!(s.load.as_ref().map(|l| l.start.clone()), Some(None));
+    }
+
+    #[test]
+    fn a_song_without_its_name_is_asked_for_again_a_few_times() {
+        let t0 = std::time::Instant::now();
+        let secs = |n| t0 + Duration::from_secs(n);
+        let song = |name: &str| {
+            PlayerUpdate::TrackChanged(Track {
+                uri: "spotify:track:a".into(),
+                name: name.into(),
+                artists: String::new(),
+                album: String::new(),
+                image_url: None,
+                duration_ms: 1,
+                album_uri: None,
+                artist_uri: None,
+            })
+        };
+        let mut s = Session::default();
+        assert!(
+            s.forward(&song(""), t0),
+            "the song still reaches the screen"
+        );
+        let asks: Vec<u64> = (0..12).filter(|&n| s.details_due(secs(n))).collect();
+        assert_eq!(asks, [1, 3, 6], "three tries, further apart");
+        // Its name arriving stops the asking.
+        s.forward(&song(""), secs(20));
+        s.forward(&song("Song"), secs(20));
+        assert!(!(20..30).any(|n| s.details_due(secs(n))));
+        // A song with its name isn't asked about.
+        s.forward(&song("Song"), secs(40));
+        assert!(!s.details_due(secs(45)));
     }
 }

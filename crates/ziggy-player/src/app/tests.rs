@@ -1637,6 +1637,36 @@ fn history_effects(fx: &[Effect]) -> Vec<HistoryCommand> {
 }
 
 #[test]
+fn a_song_announced_without_its_details_shows_them_when_they_come() {
+    let mut c = core();
+    c.handle(Input::Player(PlayerUpdate::TrackChanged(track(0))), 0);
+    let blank = |n| Track {
+        name: String::new(),
+        artists: String::new(),
+        album: String::new(),
+        ..track(n)
+    };
+    // A new song without a name isn't kept in the history yet.
+    let fx = c.handle(Input::Player(PlayerUpdate::TrackChanged(blank(1))), 1_000);
+    assert!(history_effects(&fx).is_empty());
+    assert_eq!(c.state().playback.track.as_ref().unwrap().name, "");
+    c.handle(
+        Input::Player(PlayerUpdate::Position { position_ms: 2_000 }),
+        3_000,
+    );
+    // Its details arrive: shown, logged once, and the clock doesn't jump back.
+    let fx = c.handle(Input::Player(PlayerUpdate::TrackChanged(track(1))), 3_000);
+    assert!(
+        matches!(&history_effects(&fx)[..], [HistoryCommand::Start(r)] if r.track.name == "Song 1")
+    );
+    assert_eq!(c.state().playback.track.as_ref().unwrap().name, "Song 1");
+    assert_eq!(c.state().playback.position_ms, 2_000);
+    // The same song sent blank again keeps what's shown.
+    c.handle(Input::Player(PlayerUpdate::TrackChanged(blank(1))), 4_000);
+    assert_eq!(c.state().playback.track.as_ref().unwrap().name, "Song 1");
+}
+
+#[test]
 fn each_song_is_logged_with_where_it_played_from_and_how_long() {
     let mut c = core();
     with_tracks(&mut c, "spotify:album:a1", 3);
