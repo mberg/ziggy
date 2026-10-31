@@ -16,7 +16,11 @@ pub enum Domain {
 
 impl Domain {
     pub fn of(entity_id: &str) -> Option<Domain> {
-        match entity_id.split_once('.')?.0 {
+        let (domain, object_id) = entity_id.split_once('.')?;
+        if object_id.is_empty() {
+            return None;
+        }
+        match domain {
             "light" => Some(Domain::Light),
             "switch" => Some(Domain::Switch),
             "fan" => Some(Domain::Fan),
@@ -264,6 +268,7 @@ mod tests {
         assert_eq!(Domain::of("script.reading"), Some(Domain::Script));
         assert_eq!(Domain::of("climate.hall"), None);
         assert_eq!(Domain::of("light"), None);
+        assert_eq!(Domain::of("light."), None);
         assert!(Domain::Fan.is_tile() && !Domain::Scene.is_tile());
     }
 

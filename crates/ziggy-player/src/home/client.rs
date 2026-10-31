@@ -38,7 +38,11 @@ pub fn parse(text: &str) -> Frame {
             id,
             ok: v["success"].as_bool().unwrap_or(false),
             result: v["result"].clone(),
-            error: v["error"]["message"].as_str().unwrap_or_default().into(),
+            error: v["error"]["message"]
+                .as_str()
+                .or_else(|| v["error"]["code"].as_str())
+                .unwrap_or_default()
+                .into(),
         },
         Some("event") => Frame::Event {
             id,
@@ -120,6 +124,24 @@ mod tests {
             Frame::Event {
                 id: 1,
                 event: json!({"r": ["light.x"]})
+            }
+        );
+        assert_eq!(
+            parse(r#"{"id":4,"type":"result","success":true,"result":null}"#),
+            Frame::Result {
+                id: 4,
+                ok: true,
+                result: Value::Null,
+                error: String::new()
+            }
+        );
+        assert_eq!(
+            parse(r#"{"id":8,"type":"result","success":false,"error":{"code":"unauthorized"}}"#),
+            Frame::Result {
+                id: 8,
+                ok: false,
+                result: Value::Null,
+                error: "unauthorized".into()
             }
         );
         assert_eq!(parse(r#"{"id":9,"type":"pong"}"#), Frame::Pong);

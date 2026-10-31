@@ -85,28 +85,35 @@ pub struct HomePageConfig {
 
 /// An entity ID, or a table with the name to show instead of Home Assistant's.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(untagged)]
+#[serde(
+    untagged,
+    expecting = "an entity ID like \"light.desk\", or { entity = \"light.desk\", name = \"Desk lamp\" }"
+)]
 pub enum ControlConfig {
     Id(String),
-    Named {
-        entity: String,
-        #[serde(default)]
-        name: Option<String>,
-    },
+    Named(NamedControl),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedControl {
+    pub entity: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl ControlConfig {
     pub fn entity(&self) -> &str {
         match self {
             ControlConfig::Id(id) => id,
-            ControlConfig::Named { entity, .. } => entity,
+            ControlConfig::Named(named) => &named.entity,
         }
     }
 
     pub fn name(&self) -> Option<&str> {
         match self {
             ControlConfig::Id(_) => None,
-            ControlConfig::Named { name, .. } => name.as_deref(),
+            ControlConfig::Named(named) => named.name.as_deref(),
         }
     }
 }
@@ -141,18 +148,26 @@ impl Config {
         );
         if let Some(ha) = &config.home_assistant {
             ensure!(
-                ha.url.starts_with("http://"),
-                "home_assistant.url must be the local http:// address"
+                ha.url
+                    .strip_prefix("http://")
+                    .is_some_and(|host| !host.trim_matches('/').is_empty()),
+                "home_assistant.url must be the local http:// address, not {}",
+                ha.url
             );
             for page in &ha.pages {
                 ensure!(
                     !page.name.trim().is_empty(),
                     "a home_assistant page needs a name"
                 );
+                ensure!(
+                    !page.controls.is_empty(),
+                    "home_assistant page {} has no controls",
+                    page.name
+                );
                 for control in &page.controls {
                     ensure!(
                         crate::home::types::Domain::of(control.entity()).is_some(),
-                        "{} isn't a light, switch, fan, scene or script",
+                        "{} isn't an entity ID of a light, switch, fan, scene or script",
                         control.entity()
                     );
                 }
@@ -282,5 +297,28 @@ mod tests {
     fn home_assistant_without_pages_is_allowed() {
         let c = Config::parse("device_name = \"Leo\"\nstate_dir = \"/x\"\n[home_assistant]\nurl = \"http://ha.local:8123\"\n").unwrap();
         assert!(crate::home::types::pages(c.home_assistant.as_ref().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn home_assistant_refuses_typos_and_empty_pages() {
+        let typo = HA.replace("name = \"Fairy lights\"", "nmae = \"Fairy lights\"");
+        assert!(Config::parse(&typo).is_err());
+        let err = Config::parse(&HA.replace("controls = [", "controls = [3, ")).unwrap_err();
+        assert!(err.to_string().contains("an entity ID like"), "{err:#}");
+
+        let empty = "device_name = \"Leo\"\nstate_dir = \"/x\"\n[home_assistant]\nurl = \"http://ha.local:8123\"\n\
+            [[home_assistant.page]]\nname = \"Hall\"\ncontrols = []\n";
+        let err = Config::parse(empty).unwrap_err();
+        assert!(err.to_string().contains("Hall has no controls"), "{err}");
+    }
+
+    #[test]
+    fn home_assistant_checks_the_address_and_entity_ids() {
+        let no_host = HA.replace("192.168.1.69:8123", "");
+        let err = Config::parse(&no_host).unwrap_err();
+        assert!(err.to_string().contains("not http://"), "{err}");
+        let bare = HA.replace("\"light.desk\"", "\"light.\"");
+        let err = Config::parse(&bare).unwrap_err();
+        assert!(err.to_string().contains("light."), "{err}");
     }
 }
