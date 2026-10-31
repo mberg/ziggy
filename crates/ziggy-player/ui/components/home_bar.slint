@@ -64,14 +64,23 @@ export component HomeBar inherits Rectangle {
                 colorize: Theme.text;
             }
             TouchArea {
+                // The level last sent, so a drag sends each level once.
+                property <int> last;
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
-                        root.dragging(root.level-at(self.mouse-x, self.width));
+                        self.last = root.level-at(self.mouse-x, self.width);
+                        root.dragging(self.last);
                     } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
                         root.released(root.level-at(self.mouse-x, self.width));
                     }
                 }
-                moved => { root.dragging(root.level-at(self.mouse-x, self.width)); }
+                moved => {
+                    let level = root.level-at(self.mouse-x, self.width);
+                    if level != self.last {
+                        self.last = level;
+                        root.dragging(level);
+                    }
+                }
             }
         }
         Rectangle {

@@ -320,16 +320,45 @@ fn ui_clicks() {
             .single_click(PointerEventButton::Left)
             .await;
         let sent: Vec<UiAction> = std::iter::from_fn(&mut next_action).collect();
-        let (last, drags) = sent.split_last().expect("the slider sends something");
-        assert!(!drags.is_empty());
         assert!(
-            drags
-                .iter()
-                .all(|a| matches!(a, UiAction::HomeBrightness(l) if (45..=55).contains(l))),
+            matches!(
+                sent.as_slice(),
+                [UiAction::HomeBrightness(a), UiAction::HomeBrightnessDone(b)]
+                    if (45..=55).contains(a) && a == b
+            ),
             "{sent:?}"
         );
+        // A drag sends each level once, however often the finger moves within it.
+        let track = visible_by_label(&window, "Brightness");
+        let (at, size) = (track.absolute_position(), track.size());
+        let point = |fraction: f32| {
+            LogicalPosition::new(at.x + size.width * fraction, at.y + size.height / 2.0)
+        };
+        let button = PointerEventButton::Left;
+        let w = window.window();
+        w.dispatch_event(WindowEvent::PointerPressed {
+            position: point(0.2),
+            button,
+        });
+        for fraction in [0.2, 0.2, 0.2, 0.6, 0.6] {
+            w.dispatch_event(WindowEvent::PointerMoved {
+                position: point(fraction),
+            });
+        }
+        w.dispatch_event(WindowEvent::PointerReleased {
+            position: point(0.6),
+            button,
+        });
+        let sent: Vec<UiAction> = std::iter::from_fn(&mut next_action).collect();
         assert!(
-            matches!(last, UiAction::HomeBrightnessDone(l) if (45..=55).contains(l)),
+            matches!(
+                sent.as_slice(),
+                [
+                    UiAction::HomeBrightness(a),
+                    UiAction::HomeBrightness(b),
+                    UiAction::HomeBrightnessDone(c),
+                ] if (15..=25).contains(a) && (55..=65).contains(b) && b == c
+            ),
             "{sent:?}"
         );
         visible_by_label(&window, "Back to the music")
