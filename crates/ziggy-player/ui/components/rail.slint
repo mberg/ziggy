@@ -43,6 +43,8 @@ export component Rail inherits Rectangle {
     in property <int> selected;
     // Books shows only when Audiobookshelf is turned on.
     in property <bool> books;
+    // Home shows only when Home Assistant pages are set up.
+    in property <bool> home;
     callback select(int);
     width: Theme.rail-width;
     background: Theme.surface;
@@ -56,6 +58,7 @@ export component Rail inherits Rectangle {
             alignment: start;
             // Search first, above Playlists.
             RailItem { icon: @image-url("../icons/search.svg"); label: "Search"; active: root.selected == 4; clicked => { root.select(4); } }
+            if root.home: RailItem { icon: @image-url("../icons/home.svg"); label: "Home"; active: root.selected == 8; clicked => { root.select(8); } }
             RailItem { icon: @image-url("../icons/playlists.svg"); label: "Playlists"; active: root.selected == 0; clicked => { root.select(0); } }
             RailItem { icon: @image-url("../icons/album.svg"); label: "Albums"; active: root.selected == 1; clicked => { root.select(1); } }
             RailItem { icon: @image-url("../icons/artist.svg"); label: "Artists"; active: root.selected == 2; clicked => { root.select(2); } }
