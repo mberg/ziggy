@@ -73,14 +73,23 @@ export component NowPlayingScreen inherits Rectangle {
         VerticalLayout {
             spacing: 14px;
             alignment: center;
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: 30px;
-                font-weight: 800;
-                wrap: word-wrap;
-                overflow: elide;
-                max-height: 80px;
+            // At most two lines: a long title ends in "…" rather than pushing the volume off the
+            // screen. A layout gives a wrapped Text all the lines it needs, whatever its
+            // max-height, so the frame sets the height.
+            Rectangle {
+                height: Math.min(title-text.preferred-height, 80px);
+                clip: true;
+                title-text := Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: 30px;
+                    font-weight: 800;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    vertical-alignment: top;
+                }
             }
             // The artist, with like and add-to-playlist on the same line.
             HorizontalLayout {
