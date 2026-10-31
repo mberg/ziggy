@@ -229,6 +229,25 @@ async fn serve(
                 if session.details_due(now) {
                     frames.push(protocol::command("get_state"));
                 }
+                if session.inactive_check.is_some_and(|at| now >= at) {
+                    session.inactive_check = None;
+                    // Soloist sometimes says another device took over while it goes on playing,
+                    // then reports that device's old song. Its sound still going out gives it away.
+                    let recently = session
+                        .reactivated_at
+                        .is_some_and(|at| now.duration_since(at) < REACTIVATE_GAP);
+                    if !recently && spotify_playing().await {
+                        tracing::info!("Soloist lost the active device while still playing; taking it back");
+                        session.reactivated_at = Some(now);
+                        frames.push(protocol::command("activate"));
+                    } else {
+                        // Another device took over playback: this one is no longer playing.
+                        let paused = PlayerUpdate::Paused { position_ms: 0 };
+                        if session.forward(&paused, now) {
+                            let _ = inputs.send(Input::Player(paused));
+                        }
+                    }
+                }
                 if session.skipping.is_none()
                     && let Some(position_ms) = session.position_now(now)
                 {
@@ -288,6 +307,13 @@ async fn serve(
                     Event::Queue { upcoming, .. } => {
                         frames = session.start_from_queue(&upcoming, std::time::Instant::now());
                     }
+                    Event::Active(true) => session.inactive_check = None,
+                    Event::Active(false) => {
+                        if session.inactive_check.is_none() {
+                            session.inactive_check =
+                                Some(std::time::Instant::now() + INACTIVE_CHECK);
+                        }
+                    }
                     Event::Error(message) => tracing::warn!("Soloist refused a command: {message}"),
                     Event::Other => {}
                 }
@@ -346,6 +372,12 @@ const DETAILS_RETRIES: [Duration; 8] = [
     Duration::from_secs(2),
 ];
 
+/// How long Soloist may say another device is playing before Ziggy checks. It often says so for
+/// a moment when a phone sends a song, and takes the device back by itself.
+const INACTIVE_CHECK: Duration = Duration::from_secs(3);
+/// Ziggy takes the device back at most this often, so it never fights another device.
+const REACTIVATE_GAP: Duration = Duration::from_secs(30);
+
 /// What the engine remembers between frames.
 #[derive(Default)]
 struct Session {
@@ -367,6 +399,10 @@ struct Session {
     outbox: Vec<Value>,
     /// A song that came without its name: when to ask for it again, and how many times so far.
     details: Option<(String, std::time::Instant, usize)>,
+    /// Soloist said another device is playing: when to check whether that's so.
+    inactive_check: Option<std::time::Instant>,
+    /// When Ziggy last told Soloist to take the device back.
+    reactivated_at: Option<std::time::Instant>,
 }
 
 /// Starting a list.
@@ -578,9 +614,8 @@ fn own_uid() -> Option<u32> {
     None
 }
 
-/// The PipeWire node for the Pi's headphone jack, e.g.
-/// `alsa_output.platform-3f00b840.mailbox.stereo-fallback` on a Pi 3.
-async fn jack_node() -> Option<String> {
+/// PipeWire's objects, as `pw-dump` prints them.
+async fn pw_dump() -> Option<String> {
     let mut cmd = Command::new("pw-dump");
     if std::env::var_os("XDG_RUNTIME_DIR").is_none()
         && let Some(uid) = own_uid()
@@ -588,7 +623,20 @@ async fn jack_node() -> Option<String> {
         cmd.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
     }
     let out = cmd.output().await.ok()?;
-    protocol::jack_node(&String::from_utf8_lossy(&out.stdout))
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Whether Soloist's sound is going out now.
+async fn spotify_playing() -> bool {
+    pw_dump()
+        .await
+        .is_some_and(|dump| protocol::spotify_playing(&dump))
+}
+
+/// The PipeWire node for the Pi's headphone jack, e.g.
+/// `alsa_output.platform-3f00b840.mailbox.stereo-fallback` on a Pi 3.
+async fn jack_node() -> Option<String> {
+    protocol::jack_node(&pw_dump().await?)
 }
 
 /// Soloist's own log goes to the journal; the "playing … [0:10 / 3:03]" line it prints every

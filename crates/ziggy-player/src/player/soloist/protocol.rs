@@ -118,6 +118,8 @@ pub enum Event {
         current: Option<String>,
         upcoming: Vec<String>,
     },
+    /// This device became, or stopped being, the one Spotify plays on.
+    Active(bool),
     Error(String),
     Other,
 }
@@ -156,10 +158,11 @@ pub fn parse(frame: &str) -> Event {
         },
         "volume_changed" => Event::Updates(volume(&v["volume"]).into_iter().collect()),
         "options_changed" => Event::Updates(options(&v["options"])),
-        // Another device took over playback: this one is no longer playing.
-        "device_changed" if v["is_active"].as_bool() == Some(false) => {
-            Event::Updates(vec![PlayerUpdate::Paused { position_ms: 0 }])
-        }
+        // Whether this device is the one Spotify plays on.
+        "device_changed" => match v["is_active"].as_bool() {
+            Some(active) => Event::Active(active),
+            None => Event::Other,
+        },
         "queue_changed" => Event::Queue {
             current: None,
             upcoming: v["upcoming"]
@@ -285,6 +288,19 @@ pub fn bluetooth_node(address: &str) -> String {
     format!("bluez_output.{}.1", address.replace(':', "_"))
 }
 
+/// Whether Soloist's sound is going out now, from `pw-dump` output: its stream is running.
+pub fn spotify_playing(pw_dump: &str) -> bool {
+    let Ok(nodes) = serde_json::from_str::<Vec<Value>>(pw_dump) else {
+        return false;
+    };
+    nodes.iter().any(|n| {
+        let props = &n["info"]["props"];
+        props["media.class"] == "Stream/Output/Audio"
+            && (props["node.name"] == "spotify" || props["application.name"] == "Spotify")
+            && n["info"]["state"] == "running"
+    })
+}
+
 /// The headphone jack's node in `pw-dump` output: the Pi's built-in audio, not HDMI or USB.
 pub fn jack_node(pw_dump: &str) -> Option<String> {
     let nodes: Vec<Value> = serde_json::from_str(pw_dump).ok()?;
@@ -394,7 +410,11 @@ mod tests {
         );
         assert_eq!(
             parse(r#"{"type":"device_changed","is_active":false,"device_name":"K"}"#),
-            Event::Updates(vec![PlayerUpdate::Paused { position_ms: 0 }])
+            Event::Active(false)
+        );
+        assert_eq!(
+            parse(r#"{"type":"device_changed","is_active":true,"device_name":"K"}"#),
+            Event::Active(true)
         );
         assert_eq!(parse("not json"), Event::Other);
     }
@@ -470,5 +490,19 @@ mod tests {
             bluetooth_node("3C:B8:A9:30:65:8E"),
             "bluez_output.3C_B8_A9_30_65_8E.1"
         );
+    }
+
+    #[test]
+    fn soloist_is_playing_when_its_stream_runs() {
+        let dump = |state: &str| {
+            format!(
+                r#"[{{"type":"PipeWire:Interface:Node","info":{{"state":"suspended","props":{{"node.name":"bluez_output.3C_B8.1","media.class":"Audio/Sink"}}}}}},
+                  {{"type":"PipeWire:Interface:Node","info":{{"state":"{state}","props":{{"node.name":"spotify","application.name":"Spotify","media.class":"Stream/Output/Audio"}}}}}}]"#
+            )
+        };
+        assert!(spotify_playing(&dump("running")));
+        assert!(!spotify_playing(&dump("idle")));
+        assert!(!spotify_playing("[]"));
+        assert!(!spotify_playing("not json"));
     }
 }
