@@ -1,8 +1,8 @@
 //! Keeps a WebSocket to Home Assistant open: subscribes to the configured entities, reads area
 //! names once, sends calls, and reconnects after drops. `--fake` uses a pretend house instead.
+//! Nothing is kept on disk.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -13,14 +13,26 @@ use tokio_tungstenite::tungstenite::Message;
 use super::client::{self, Frame};
 use super::types::{Control, Domain, EntityState, Page, States, area_names, brightness_of};
 use crate::app::{HomeRequest, HomeUpdate, Input};
-use crate::library::cache::DiskCache;
 
 pub const RETRY_FIRST: Duration = Duration::from_secs(2);
 const RETRY_MOST: Duration = Duration::from_secs(60);
-/// A connection that answers no ping for this long is dead.
+/// Pinged this often; a ping unanswered by the next one means the link is dead.
 const PING_EVERY: Duration = Duration::from_secs(30);
-const STATES_KEY: &str = "home-states";
-const AREAS_KEY: &str = "home-areas";
+/// Connecting and signing in must be done within this.
+const SIGN_IN_WITHIN: Duration = Duration::from_secs(10);
+
+const SUBSCRIPTION: u64 = 1;
+/// Read once per connection, for area names.
+const REGISTRIES: [(u64, &str); 3] = [
+    (2, "config/entity_registry/list_for_display"),
+    (3, "config/device_registry/list"),
+    (4, "config/area_registry/list"),
+];
+/// Calls and pings are numbered from here.
+const FIRST_CALL: u64 = REGISTRIES[REGISTRIES.len() - 1].0 + 1;
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 pub enum Backend {
     Real {
@@ -38,7 +50,6 @@ pub fn next_retry(d: Duration) -> Duration {
 pub fn spawn_home(
     backend: Backend,
     entity_ids: Vec<String>,
-    cache: Arc<DiskCache>,
     inputs: UnboundedSender<Input>,
 ) -> UnboundedSender<HomeRequest> {
     let (tx, rx) = mpsc::unbounded_channel();
@@ -48,7 +59,6 @@ pub fn spawn_home(
                 client::websocket_url(&url),
                 token,
                 entity_ids,
-                cache,
                 inputs,
                 rx,
             ));
@@ -73,21 +83,13 @@ async fn run(
     url: String,
     token: String,
     ids: Vec<String>,
-    cache: Arc<DiskCache>,
     inputs: UnboundedSender<Input>,
     mut requests: UnboundedReceiver<HomeRequest>,
 ) {
-    // Names and states from last time, so tiles have names before Home Assistant answers.
-    if let Some(states) = cache.read::<Vec<(String, EntityState)>>(STATES_KEY) {
-        send(&inputs, HomeUpdate::States(states));
-    }
-    if let Some(areas) = cache.read::<HashMap<String, String>>(AREAS_KEY) {
-        send(&inputs, HomeUpdate::Areas(areas));
-    }
     let mut retry = RETRY_FIRST;
     loop {
         let started = Instant::now();
-        match session(&url, &token, &ids, &cache, &inputs, &mut requests).await {
+        match session(&url, &token, &ids, &inputs, &mut requests).await {
             Ok(End::RequestsClosed) => return,
             Ok(End::Refused) => {
                 tracing::warn!("Home Assistant refused the token");
@@ -129,9 +131,28 @@ fn refuse(inputs: &UnboundedSender<Input>, request: HomeRequest) {
             inputs,
             HomeUpdate::CallFailed {
                 entity_id,
-                message: "not connected".into(),
+                message: "Not connected".into(),
             },
         );
+    }
+}
+
+/// Connects and signs in. `None` when Home Assistant refused the token.
+async fn sign_in(url: &str, token: &str) -> anyhow::Result<Option<Socket>> {
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await?;
+    loop {
+        let Some(message) = ws.next().await else {
+            anyhow::bail!("closed while signing in");
+        };
+        let Message::Text(text) = message? else {
+            continue;
+        };
+        match client::parse(&text) {
+            Frame::AuthRequired => ws.send(Message::text(client::auth(token))).await?,
+            Frame::AuthOk => return Ok(Some(ws)),
+            Frame::AuthInvalid(_) => return Ok(None),
+            _ => {}
+        }
     }
 }
 
@@ -139,33 +160,18 @@ async fn session(
     url: &str,
     token: &str,
     ids: &[String],
-    cache: &DiskCache,
     inputs: &UnboundedSender<Input>,
     requests: &mut UnboundedReceiver<HomeRequest>,
 ) -> anyhow::Result<End> {
-    let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+    let ws = match tokio::time::timeout(SIGN_IN_WITHIN, sign_in(url, token)).await {
+        Err(_) => anyhow::bail!("no answer while signing in"),
+        Ok(signed_in) => match signed_in? {
+            Some(ws) => ws,
+            None => return Ok(End::Refused),
+        },
+    };
     let (mut tx, mut rx) = ws.split();
-    loop {
-        let Some(message) = rx.next().await else {
-            anyhow::bail!("closed while signing in");
-        };
-        let Message::Text(text) = message? else {
-            continue;
-        };
-        match client::parse(&text) {
-            Frame::AuthRequired => tx.send(Message::text(client::auth(token))).await?,
-            Frame::AuthOk => break,
-            Frame::AuthInvalid(_) => return Ok(End::Refused),
-            _ => {}
-        }
-    }
     send(inputs, HomeUpdate::Connected);
-    const SUBSCRIPTION: u64 = 1;
-    const REGISTRIES: [(u64, &str); 3] = [
-        (2, "config/entity_registry/list_for_display"),
-        (3, "config/device_registry/list"),
-        (4, "config/area_registry/list"),
-    ];
     // With no entity IDs Home Assistant would send every entity in the house.
     if !ids.is_empty() {
         tx.send(Message::text(client::subscribe(SUBSCRIPTION, ids)))
@@ -174,11 +180,11 @@ async fn session(
     for (id, kind) in REGISTRIES {
         tx.send(Message::text(client::command(id, kind))).await?;
     }
-    let mut next_id = 5u64;
+    let mut next_id = FIRST_CALL;
     let mut states = States::default();
+    let mut first_event = true;
     let mut registries: HashMap<u64, Value> = HashMap::new();
-    // Calls waiting for their result, by message ID. The subscription's own result (ID 1) finds
-    // nothing here and is ignored.
+    // Calls waiting for their result, by message ID.
     let mut calls: HashMap<u64, String> = HashMap::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut awaiting_pong = false;
@@ -191,24 +197,35 @@ async fn session(
                 let Message::Text(text) = message? else { continue };
                 match client::parse(&text) {
                     Frame::Event { id: SUBSCRIPTION, event } => {
-                        let (changed, removed) = states.apply(&event);
+                        let (changed, mut removed) = states.apply(&event);
+                        if first_event {
+                            // Deleted or renamed in Home Assistant: no state is coming.
+                            first_event = false;
+                            removed.extend(ids.iter().filter(|id| states.get(id).is_none()).cloned());
+                        }
                         if !changed.is_empty() {
                             send(inputs, HomeUpdate::States(changed));
                         }
                         if !removed.is_empty() {
                             send(inputs, HomeUpdate::Removed(removed));
                         }
-                        let _ = cache.write(STATES_KEY, &states.snapshot());
                     }
-                    Frame::Result { id, ok, result, error } if (2..=4).contains(&id) => {
+                    Frame::Result { id: SUBSCRIPTION, ok, error, .. } => {
+                        if !ok {
+                            tracing::warn!("Home Assistant refused the subscription: {error}");
+                        }
+                    }
+                    Frame::Result { id, ok, result, error }
+                        if REGISTRIES.iter().any(|(r, _)| *r == id) =>
+                    {
                         if !ok {
                             tracing::info!("Home Assistant didn't list {id}: {error}");
                         }
                         registries.insert(id, if ok { result } else { Value::Null });
                         if registries.len() == REGISTRIES.len() {
-                            let areas =
-                                area_names(&registries[&2], &registries[&3], &registries[&4]);
-                            let _ = cache.write(AREAS_KEY, &areas);
+                            let [entities, devices, areas] = REGISTRIES.map(|(r, _)| &registries[&r]);
+                            let mut areas = area_names(entities, devices, areas);
+                            areas.retain(|id, _| ids.contains(id));
                             send(inputs, HomeUpdate::Areas(areas));
                         }
                     }
@@ -225,7 +242,13 @@ async fn session(
             }
             request = requests.recv() => match request {
                 None => return Ok(End::RequestsClosed),
-                Some(HomeRequest::Reconnect) => {}
+                Some(HomeRequest::Reconnect) => {
+                    // The network changed: find out now whether this link survived.
+                    tx.send(Message::text(client::ping(next_id))).await?;
+                    next_id += 1;
+                    awaiting_pong = true;
+                    ping.reset();
+                }
                 Some(HomeRequest::Call { entity_id, service, brightness_pct }) => {
                     let id = next_id;
                     next_id += 1;
@@ -237,9 +260,8 @@ async fn session(
             _ = ping.tick() => {
                 anyhow::ensure!(!awaiting_pong, "Home Assistant stopped answering");
                 awaiting_pong = true;
-                let id = next_id;
+                tx.send(Message::text(client::ping(next_id))).await?;
                 next_id += 1;
-                tx.send(Message::text(client::ping(id))).await?;
             }
         }
     }
@@ -282,7 +304,7 @@ pub fn fake_pages() -> Vec<Page> {
 }
 
 async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceiver<HomeRequest>) {
-    let names = [
+    let devices = [
         (
             "light.micah_ceiling",
             "Ceiling light",
@@ -323,7 +345,7 @@ async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceive
         ("switch.tv", "TV plug", "Living room", "off", None),
         ("light.porch", "Porch light", "Outside", "off", None),
     ];
-    let mut house: HashMap<String, EntityState> = names
+    let mut house: HashMap<String, EntityState> = devices
         .iter()
         .map(|(id, name, _, state, b)| {
             (
@@ -336,7 +358,7 @@ async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceive
             )
         })
         .collect();
-    let areas = names
+    let areas = devices
         .iter()
         .map(|(id, _, area, _, _)| (id.to_string(), area.to_string()))
         .collect();
@@ -374,11 +396,12 @@ async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceive
             _ => !state.is_on(),
         };
         state.state = if on { "on" } else { "off" }.into();
-        state.brightness = match (on, brightness_pct) {
+        // Only a lit light has a brightness.
+        let light = Domain::of(&entity_id) == Some(Domain::Light);
+        state.brightness = match (on && light, brightness_pct) {
             (false, _) => None,
             (true, Some(pct)) => Some(brightness_of(pct)),
-            (true, None) if entity_id.starts_with("light.") => state.brightness.or(Some(255)),
-            (true, None) => None,
+            (true, None) => state.brightness.or(Some(255)),
         };
         send(
             &inputs,
@@ -390,6 +413,72 @@ async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceive
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::WebSocketStream;
+
+    /// Waits for the next update the service sends, failing instead of hanging.
+    async fn next(rx: &mut UnboundedReceiver<Input>) -> HomeUpdate {
+        match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            Ok(Some(Input::Home(update))) => update,
+            Ok(other) => panic!("expected a Home update, got {other:?}"),
+            Err(_) => panic!("no Home update within 5s"),
+        }
+    }
+
+    /// Skips updates until one `pick` takes.
+    async fn wait_for<T>(
+        rx: &mut UnboundedReceiver<Input>,
+        mut pick: impl FnMut(HomeUpdate) -> Option<T>,
+    ) -> T {
+        loop {
+            if let Some(found) = pick(next(rx).await) {
+                return found;
+            }
+        }
+    }
+
+    /// A pretend Home Assistant on a free local port, and the address to give `spawn_home`.
+    async fn listen() -> (TcpListener, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        (listener, url)
+    }
+
+    async fn accept(listener: &TcpListener) -> WebSocketStream<TcpStream> {
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio_tungstenite::accept_async(stream).await.unwrap()
+    }
+
+    async fn say(ws: &mut WebSocketStream<TcpStream>, v: Value) {
+        ws.send(Message::text(v.to_string())).await.unwrap();
+    }
+
+    async fn hear(ws: &mut WebSocketStream<TcpStream>) -> Value {
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Asks for the token and accepts it.
+    async fn sign_in(ws: &mut WebSocketStream<TcpStream>) {
+        say(ws, json!({"type": "auth_required"})).await;
+        assert_eq!(hear(ws).await["access_token"], "tok");
+        say(ws, json!({"type": "auth_ok"})).await;
+    }
+
+    fn real(url: &str, ids: &[&str]) -> (UnboundedSender<HomeRequest>, UnboundedReceiver<Input>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let backend = Backend::Real {
+            url: url.into(),
+            token: "tok".into(),
+        };
+        let ids = ids.iter().map(|id| id.to_string()).collect();
+        (spawn_home(backend, ids, tx), rx)
+    }
 
     #[test]
     fn retries_back_off_to_a_minute() {
@@ -403,19 +492,150 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_fake_answers_taps_with_new_states() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let dir = tempfile::tempdir().unwrap();
-        let cache = Arc::new(DiskCache::new(dir.path().to_path_buf()).unwrap());
-        let requests = spawn_home(Backend::Fake, Vec::new(), cache, tx);
-        let mut connected = false;
-        while let Some(Input::Home(update)) = rx.recv().await {
-            if update == HomeUpdate::Connected {
-                connected = true;
-                break;
+    async fn a_refused_token_is_reported_and_calls_fail() {
+        let (listener, url) = listen().await;
+        let (requests, mut rx) = real(&url, &["light.desk"]);
+        let mut ws = accept(&listener).await;
+        say(&mut ws, json!({"type": "auth_required"})).await;
+        hear(&mut ws).await;
+        say(
+            &mut ws,
+            json!({"type": "auth_invalid", "message": "Invalid access token"}),
+        )
+        .await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Refused);
+        requests
+            .send(HomeRequest::Call {
+                entity_id: "light.desk".into(),
+                service: "toggle",
+                brightness_pct: None,
+            })
+            .unwrap();
+        assert_eq!(
+            next(&mut rx).await,
+            HomeUpdate::CallFailed {
+                entity_id: "light.desk".into(),
+                message: "Not connected".into()
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_reports_states_missing_entities_and_areas() {
+        let (listener, url) = listen().await;
+        let (_requests, mut rx) = real(&url, &["light.desk", "light.gone"]);
+        let mut ws = accept(&listener).await;
+        sign_in(&mut ws).await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Connected);
+        let subscribe = hear(&mut ws).await;
+        assert_eq!(subscribe["type"], "subscribe_entities");
+        assert_eq!(subscribe["entity_ids"], json!(["light.desk", "light.gone"]));
+        for _ in REGISTRIES {
+            hear(&mut ws).await;
         }
-        assert!(connected);
+        say(
+            &mut ws,
+            json!({"id": 1, "type": "result", "success": true, "result": null}),
+        )
+        .await;
+        say(
+            &mut ws,
+            json!({"id": 1, "type": "event", "event": {"a": {
+                "light.desk": {"s": "on", "a": {"friendly_name": "Desk lamp", "brightness": 255}}
+            }}}),
+        )
+        .await;
+        let states = wait_for(&mut rx, |u| match u {
+            HomeUpdate::States(s) => Some(s),
+            _ => None,
+        })
+        .await;
+        assert_eq!(states[0].0, "light.desk");
+        assert_eq!(
+            next(&mut rx).await,
+            HomeUpdate::Removed(vec!["light.gone".into()])
+        );
+        let entities = json!({"entities": [
+            {"ei": "light.desk", "ai": "study"},
+            {"ei": "light.elsewhere", "ai": "study"}
+        ]});
+        let areas = json!([{"area_id": "study", "name": "Study"}]);
+        for (id, result) in [(2, entities), (3, json!([])), (4, areas)] {
+            say(
+                &mut ws,
+                json!({"id": id, "type": "result", "success": true, "result": result}),
+            )
+            .await;
+        }
+        let areas = wait_for(&mut rx, |u| match u {
+            HomeUpdate::Areas(a) => Some(a),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            areas,
+            HashMap::from([("light.desk".to_string(), "Study".to_string())])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_call_reports_home_assistants_message() {
+        let (listener, url) = listen().await;
+        let (requests, mut rx) = real(&url, &["light.desk"]);
+        let mut ws = accept(&listener).await;
+        sign_in(&mut ws).await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Connected);
+        requests
+            .send(HomeRequest::Call {
+                entity_id: "light.desk".into(),
+                service: "turn_on",
+                brightness_pct: Some(40),
+            })
+            .unwrap();
+        let call = loop {
+            let v = hear(&mut ws).await;
+            if v["type"] == "call_service" {
+                break v;
+            }
+        };
+        assert!(call["id"].as_u64().unwrap() >= FIRST_CALL);
+        say(
+            &mut ws,
+            json!({"id": call["id"], "type": "result", "success": false,
+                   "error": {"code": "home_assistant_error", "message": "Light is busy"}}),
+        )
+        .await;
+        let failed = wait_for(&mut rx, |u| match u {
+            HomeUpdate::CallFailed { .. } => Some(u),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            failed,
+            HomeUpdate::CallFailed {
+                entity_id: "light.desk".into(),
+                message: "Light is busy".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closed_connection_is_reported() {
+        let (listener, url) = listen().await;
+        let (_requests, mut rx) = real(&url, &["light.desk"]);
+        let mut ws = accept(&listener).await;
+        sign_in(&mut ws).await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Connected);
+        ws.close(None).await.unwrap();
+        drop(ws);
+        assert_eq!(next(&mut rx).await, HomeUpdate::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn the_fake_answers_taps_with_new_states() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let requests = spawn_home(Backend::Fake, Vec::new(), tx);
+        wait_for(&mut rx, |u| (u == HomeUpdate::Connected).then_some(())).await;
         requests
             .send(HomeRequest::Call {
                 entity_id: "light.micah_desk".into(),
@@ -423,28 +643,25 @@ mod tests {
                 brightness_pct: Some(40),
             })
             .unwrap();
-        loop {
-            if let Some(Input::Home(HomeUpdate::States(states))) = rx.recv().await
-                && let Some((_, s)) = states.iter().find(|(id, _)| id == "light.micah_desk")
-                && s.is_on()
-            {
-                assert_eq!(s.percent(), Some(40));
-                break;
-            }
-        }
+        let desk = wait_for(&mut rx, |u| match u {
+            HomeUpdate::States(states) => states
+                .into_iter()
+                .find(|(id, s)| id == "light.micah_desk" && s.is_on()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(desk.1.percent(), Some(40));
     }
 
     #[tokio::test]
     async fn the_fake_house_has_every_fake_tile() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let dir = tempfile::tempdir().unwrap();
-        let cache = Arc::new(DiskCache::new(dir.path().to_path_buf()).unwrap());
-        let _requests = spawn_home(Backend::Fake, Vec::new(), cache, tx);
-        let mut have: Vec<String> = loop {
-            if let Some(Input::Home(HomeUpdate::States(states))) = rx.recv().await {
-                break states.into_iter().map(|(id, _)| id).collect();
-            }
-        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _requests = spawn_home(Backend::Fake, Vec::new(), tx);
+        let mut have: Vec<String> = wait_for(&mut rx, |u| match u {
+            HomeUpdate::States(states) => Some(states.into_iter().map(|(id, _)| id).collect()),
+            _ => None,
+        })
+        .await;
         let mut want: Vec<String> = fake_pages()
             .into_iter()
             .flat_map(|p| p.tiles)
@@ -453,5 +670,27 @@ mod tests {
         have.sort();
         want.sort();
         assert_eq!(have, want);
+    }
+
+    #[tokio::test]
+    async fn only_lights_in_the_fake_get_a_brightness() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let requests = spawn_home(Backend::Fake, Vec::new(), tx);
+        wait_for(&mut rx, |u| (u == HomeUpdate::Connected).then_some(())).await;
+        requests
+            .send(HomeRequest::Call {
+                entity_id: "fan.micah".into(),
+                service: "turn_on",
+                brightness_pct: Some(40),
+            })
+            .unwrap();
+        let fan = wait_for(&mut rx, |u| match u {
+            HomeUpdate::States(states) => states
+                .into_iter()
+                .find(|(id, s)| id == "fan.micah" && s.is_on()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(fan.1.brightness, None);
     }
 }
