@@ -1083,6 +1083,7 @@ fn banner(state: &AppState) -> Option<String> {
         Some(Notice::RemovedFrom(name)) => Some(format!("Removed from {name}")),
         Some(Notice::Created(name)) => Some(format!("Created {name}")),
         Some(Notice::Voice(text)) => Some(text.clone()),
+        Some(Notice::Home(message)) => Some(format!("Home Assistant: {message}")),
         None if !state.speaker_connected => Some("Speaker not connected".into()),
         None => None,
     }

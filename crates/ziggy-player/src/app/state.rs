@@ -142,6 +142,8 @@ pub enum Notice {
     Created(String),
     /// What a voice request did, or why it didn't.
     Voice(String),
+    /// Home Assistant refused a change; the tile has been put back.
+    Home(String),
 }
 
 /// Where a voice request is.
