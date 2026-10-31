@@ -7,7 +7,9 @@ use i_slint_backend_testing::ElementHandle;
 use slint::ComponentHandle;
 use slint::LogicalPosition;
 use slint::platform::{PointerEventButton, WindowEvent};
-use ziggy_player::{AppWindow, ScreenKind, TileData};
+use ziggy_player::app::{Input, UiAction};
+use ziggy_player::model::Section;
+use ziggy_player::{AppWindow, HomeTileData, ScreenKind, TileData};
 
 fn visible_by_label(window: &AppWindow, label: &str) -> ElementHandle {
     let found: Vec<ElementHandle> =
@@ -226,6 +228,92 @@ fn ui_clicks() {
             .await;
         assert!(created.get(), "the plus on Playlists starts a new playlist");
         window.set_can_create_playlist(false);
+
+        // Home: tiles send their taps through the bridge, and the brightness bar replaces
+        // the music bar.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ziggy_player::ui_bridge::wire_callbacks(&window, tx);
+        let mut next_action = move || match rx.try_recv() {
+            Ok(Input::Ui(action)) => Some(action),
+            _ => None,
+        };
+        window.set_home_enabled(true);
+        window.set_screen(ScreenKind::Home);
+        window.set_home_pages(slint::ModelRc::new(slint::VecModel::from(vec![
+            slint::SharedString::from("Micah's room"),
+            slint::SharedString::from("Downstairs"),
+        ])));
+        window.set_home_tiles(slint::ModelRc::new(slint::VecModel::from(vec![
+            HomeTileData {
+                id: "light.desk".into(),
+                name: "Desk lamp".into(),
+                split: true,
+                strip: "Off".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            HomeTileData {
+                id: "light.bay".into(),
+                name: "Bay window".into(),
+                on: true,
+                split: true,
+                strip: "70%".into(),
+                level: 70,
+                sun: true,
+                enabled: true,
+                ..Default::default()
+            },
+        ])));
+        slint::platform::update_timers_and_animations();
+        visible_by_label(&window, "Home")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(
+            next_action(),
+            Some(UiAction::ShowSection(Section::Home)),
+            "the rail shows Home when it's set up"
+        );
+        visible_by_label(&window, "Downstairs")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomePage(1)));
+        visible_by_label(&window, "Desk lamp")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomeTile("light.desk".into())));
+        visible_by_label(&window, "70%")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomeStrip("light.bay".into())));
+        window.set_home_bar_visible(true);
+        window.set_home_bar_name("Bay window".into());
+        window.set_home_bar_level_text("70%".into());
+        window.set_home_bar_level(70);
+        window.set_home_bar_on(true);
+        slint::platform::update_timers_and_animations();
+        // A tap on the slider is a drag that ends at once: the release always follows.
+        visible_by_label(&window, "Brightness")
+            .single_click(PointerEventButton::Left)
+            .await;
+        let sent: Vec<UiAction> = std::iter::from_fn(&mut next_action).collect();
+        let (last, drags) = sent.split_last().expect("the slider sends something");
+        assert!(!drags.is_empty());
+        assert!(
+            drags
+                .iter()
+                .all(|a| matches!(a, UiAction::HomeBrightness(l) if (45..=55).contains(l))),
+            "{sent:?}"
+        );
+        assert!(
+            matches!(last, UiAction::HomeBrightnessDone(l) if (45..=55).contains(l)),
+            "{sent:?}"
+        );
+        visible_by_label(&window, "Back to the music")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomeBarClose));
+        window.set_home_bar_visible(false);
+        window.set_home_enabled(false);
 
         // Keyboard: Shift makes the next letter uppercase, then turns itself off.
         window.set_keyboard_open(true);

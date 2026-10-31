@@ -1,9 +1,10 @@
 import "fonts/Nunito-Bold.ttf";
 import "fonts/Nunito-ExtraBold.ttf";
 import { Theme } from "theme.slint";
-import { TileData, TrackData, ScreenKind, LoadState, SearchRowData, SpeakerRowData } from "types.slint";
+import { TileData, TrackData, ScreenKind, LoadState, SearchRowData, SpeakerRowData, HomeTileData, HomeSceneData } from "types.slint";
 import { Rail } from "components/rail.slint";
 import { MiniPlayer } from "components/mini_player.slint";
+import { HomeBar } from "components/home_bar.slint";
 import { Banner } from "components/banner.slint";
 import { VoicePill } from "components/voice_pill.slint";
 import { GridScreen } from "screens/grid.slint";
@@ -20,8 +21,9 @@ import { ConfirmDelete } from "components/confirm_dialog.slint";
 import { SettingsScreen } from "screens/settings.slint";
 import { BooksScreen } from "screens/books.slint";
 import { BookScreen, ChapterData } from "screens/book.slint";
+import { HomeScreen } from "screens/home.slint";
 
-export { TileData, TrackData, ScreenKind, LoadState, SearchRowData, SpeakerRowData, Theme, ChapterData }
+export { TileData, TrackData, ScreenKind, LoadState, SearchRowData, SpeakerRowData, Theme, ChapterData, HomeTileData, HomeSceneData }
 
 export component AppWindow inherits Window {
     width: 800px;
@@ -125,6 +127,18 @@ export component AppWindow inherits Window {
     in property <string> books-url;
     in property <string> books-user;
     in property <string> books-settings-message;
+    in property <bool> home-enabled;
+    in property <[string]> home-pages;
+    in property <int> home-page;
+    in property <[HomeTileData]> home-tiles;
+    in property <[HomeSceneData]> home-scenes;
+    in property <string> home-banner;
+    // A light's brightness bar, in the music bar's place.
+    in property <bool> home-bar-visible;
+    in property <string> home-bar-name;
+    in property <string> home-bar-level-text;
+    in property <int> home-bar-level;
+    in property <bool> home-bar-on;
     in property <bool> can-create-playlist;
     in property <bool> recent-songs;
     in property <[TileData]> recent-song-rows;
@@ -172,6 +186,14 @@ export component AppWindow inherits Window {
     callback edit-books-server();
     callback books-sign-in();
     callback books-sign-out();
+    callback home-pick-page(int);
+    callback home-tap-tile(string);
+    callback home-tap-strip(string);
+    callback home-run-scene(string);
+    callback home-bar-drag(int);
+    callback home-bar-release(int);
+    callback home-bar-toggle();
+    callback home-bar-close();
     callback create-playlist();
     callback play-recent(int);
     callback toggle-save-album(string);
@@ -199,7 +221,7 @@ export component AppWindow inherits Window {
     callback remove-track(int);
     callback move-track(int, int);
 
-    property <length> content-height: root.mini-visible ? root.height - Theme.mini-height : root.height;
+    property <length> content-height: root.mini-visible || root.home-bar-visible ? root.height - Theme.mini-height : root.height;
 
     Rail {
         x: 0;
@@ -209,6 +231,7 @@ export component AppWindow inherits Window {
         visible: root.screen != ScreenKind.search;
         selected: root.section;
         books: root.books-enabled;
+        home: root.home-enabled;
         select(i) => { root.show-section(i); }
     }
     GridScreen {
@@ -314,6 +337,22 @@ export component AppWindow inherits Window {
         chapters: root.book-chapters;
         state: root.book-state;
     }
+    HomeScreen {
+        x: Theme.rail-width;
+        y: 0;
+        width: root.width - Theme.rail-width;
+        height: root.content-height;
+        visible: root.screen == ScreenKind.home;
+        pages: root.home-pages;
+        page: root.home-page;
+        tiles: root.home-tiles;
+        scenes: root.home-scenes;
+        banner: root.home-banner;
+        pick-page(i) => { root.home-pick-page(i); }
+        tap-tile(id) => { root.home-tap-tile(id); }
+        tap-strip(id) => { root.home-tap-strip(id); }
+        run-scene(id) => { root.home-run-scene(id); }
+    }
     SettingsScreen {
         x: Theme.rail-width;
         y: 0;
@@ -377,7 +416,7 @@ export component AppWindow inherits Window {
         open(uri) => { root.open-collection(uri); }
     }
 
-    if root.mini-visible: MiniPlayer {
+    if root.mini-visible && !root.home-bar-visible: MiniPlayer {
         x: root.screen == ScreenKind.search ? 0 : Theme.rail-width;
         y: root.height - Theme.mini-height;
         width: root.width - self.x;
@@ -388,6 +427,19 @@ export component AppWindow inherits Window {
         playing: root.playing;
         open => { root.open-now-playing(); }
         toggle-play => { root.toggle-play(); }
+    }
+    if root.home-bar-visible: HomeBar {
+        x: Theme.rail-width;
+        y: root.height - Theme.mini-height;
+        width: root.width - Theme.rail-width;
+        name: root.home-bar-name;
+        level-text: root.home-bar-level-text;
+        level: root.home-bar-level;
+        on: root.home-bar-on;
+        dragging(l) => { root.home-bar-drag(l); }
+        released(l) => { root.home-bar-release(l); }
+        toggle => { root.home-bar-toggle(); }
+        close => { root.home-bar-close(); }
     }
     NowPlayingScreen {
         x: 0;

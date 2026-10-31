@@ -1,0 +1,198 @@
+import { Theme } from "../theme.slint";
+import { HomeTileData, HomeSceneData } from "../types.slint";
+
+component HomeTile inherits Rectangle {
+    in property <HomeTileData> data;
+    callback tap();
+    callback tap-strip();
+    property <color> fg: root.data.on ? Theme.accent-text : Theme.text;
+    property <length> main-width: root.data.split ? root.width * 0.66 : root.width;
+    accessible-role: button;
+    accessible-label: root.data.name;
+    accessible-action-default => { if root.data.enabled { root.tap(); } }
+    border-radius: Theme.radius;
+    background: root.data.on ? Theme.accent : Theme.surface;
+    opacity: root.data.enabled ? 1 : 0.45;
+    // Outlined while its brightness is in the bottom bar.
+    Rectangle {
+        x: -5px;
+        y: -5px;
+        width: root.width + 10px;
+        height: root.height + 10px;
+        border-radius: Theme.radius + 5px;
+        border-width: 3px;
+        border-color: root.data.selected ? Theme.text : transparent;
+    }
+    VerticalLayout {
+        x: 0;
+        width: root.main-width;
+        padding: 12px;
+        padding-left: 14px;
+        alignment: space-between;
+        Image {
+            source: root.data.icon == 1 ? @image-url("../icons/plug.svg") : root.data.icon == 2 ? @image-url("../icons/fan.svg") : @image-url("../icons/bulb.svg");
+            width: 30px;
+            height: 30px;
+            colorize: root.fg;
+        }
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: root.data.name;
+                color: root.fg;
+                font-size: 17px;
+                font-weight: 800;
+                overflow: elide;
+            }
+            if root.data.line != "": Text {
+                text: root.data.line;
+                color: root.data.on ? Theme.accent-text.transparentize(0.22) : Theme.text-dim;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+    }
+    TouchArea {
+        x: 0;
+        width: root.main-width;
+        clicked => { if root.data.enabled { root.tap(); } }
+    }
+    if root.data.split: Rectangle {
+        x: root.main-width;
+        width: root.width - root.main-width;
+        border-top-right-radius: Theme.radius;
+        border-bottom-right-radius: Theme.radius;
+        // Amber, darker as the light dims.
+        background: root.data.on ? #1b1300.with-alpha(0.45 * (1 - root.data.level / 100)) : Theme.surface-hi;
+        VerticalLayout {
+            alignment: center;
+            spacing: 6px;
+            if root.data.sun: Image {
+                source: @image-url("../icons/sun.svg");
+                height: 26px;
+                image-fit: contain;
+                colorize: root.fg;
+            }
+            Text {
+                text: root.data.strip;
+                horizontal-alignment: center;
+                color: root.fg;
+                font-size: Theme.font-small;
+                font-weight: 800;
+            }
+        }
+        TouchArea {
+            clicked => { if root.data.enabled { root.tap-strip(); } }
+        }
+    }
+}
+
+export component HomeScreen inherits Rectangle {
+    in property <[string]> pages;
+    in property <int> page;
+    in property <[HomeTileData]> tiles;
+    in property <[HomeSceneData]> scenes;
+    in property <string> banner;
+    callback pick-page(int);
+    callback tap-tile(string);
+    callback tap-strip(string);
+    callback run-scene(string);
+    VerticalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 14px;
+        padding-bottom: 16px;
+        spacing: 10px;
+        if root.banner != "": Rectangle {
+            height: 44px;
+            border-radius: Theme.radius;
+            background: Theme.surface-hi;
+            Text {
+                x: 14px;
+                width: parent.width - 28px;
+                height: parent.height;
+                vertical-alignment: center;
+                text: root.banner;
+                color: Theme.text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+        Flickable {
+            height: 48px;
+            content-width: chips.preferred-width;
+            chips := HorizontalLayout {
+                spacing: 10px;
+                for name[i] in root.pages: Rectangle {
+                    width: label.preferred-width + 40px;
+                    height: 48px;
+                    border-radius: 24px;
+                    background: i == root.page ? Theme.accent : (chip.pressed ? Theme.surface-hi : Theme.surface);
+                    accessible-role: button;
+                    accessible-label: name;
+                    accessible-action-default => { root.pick-page(i); }
+                    label := Text {
+                        text: name;
+                        color: i == root.page ? Theme.accent-text : Theme.text-dim;
+                        font-size: 16px;
+                        font-weight: 800;
+                    }
+                    chip := TouchArea {
+                        clicked => { root.pick-page(i); }
+                    }
+                }
+            }
+        }
+        // Tiles sit 5 px in from the edges so a selected tile's outline isn't clipped.
+        grid := Flickable {
+            vertical-stretch: 1;
+            property <length> tile-width: (self.width - 34px) / 3;
+            content-height: Math.ceil(root.tiles.length / 3) * 112px;
+            for tile[i] in root.tiles: HomeTile {
+                x: 5px + Math.mod(i, 3) * (grid.tile-width + 12px);
+                y: Math.floor(i / 3) * 112px + 5px;
+                width: grid.tile-width;
+                height: 100px;
+                data: tile;
+                tap => { root.tap-tile(tile.id); }
+                tap-strip => { root.tap-strip(tile.id); }
+            }
+        }
+        if root.scenes.length > 0: HorizontalLayout {
+            height: 64px;
+            spacing: 12px;
+            for scene in root.scenes: Rectangle {
+                horizontal-stretch: 1;
+                border-radius: Theme.radius;
+                background: Theme.surface-hi;
+                border-width: 2px;
+                border-color: scene.ran ? Theme.accent : transparent;
+                opacity: scene.enabled ? 1 : 0.45;
+                accessible-role: button;
+                accessible-label: scene.name;
+                accessible-action-default => { if scene.enabled { root.run-scene(scene.id); } }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    Image {
+                        source: @image-url("../icons/sparkle.svg");
+                        width: 24px;
+                        image-fit: contain;
+                        colorize: Theme.accent;
+                    }
+                    Text {
+                        text: scene.name;
+                        color: Theme.text;
+                        font-size: 17px;
+                        font-weight: 800;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                TouchArea {
+                    clicked => { if scene.enabled { root.run-scene(scene.id); } }
+                }
+            }
+        }
+    }
+}
