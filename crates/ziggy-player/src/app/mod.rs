@@ -126,6 +126,8 @@ pub struct Core {
     home_undo: HashMap<String, Option<crate::home::types::EntityState>>,
     /// When a dragged brightness was last sent.
     home_sent_ms: u64,
+    /// The brightness under the finger while the bar is being dragged.
+    home_drag: Option<u8>,
 }
 
 /// This many songs failing within `FAILED_TRACKS_WINDOW_MS` pauses playback.
@@ -224,6 +226,7 @@ impl Core {
             offline_retry_ms: now_ms,
             home_undo: HashMap::new(),
             home_sent_ms: 0,
+            home_drag: None,
         };
         let mut fx = Vec::new();
         for section in [Section::Playlists, Section::Albums, Section::Recent] {
@@ -290,7 +293,7 @@ impl Core {
         }
         // Leaving Home puts the music back in the bottom bar.
         if self.state.screen != Screen::Home {
-            self.state.home.selected = None;
+            self.home_deselect();
         }
         // Edit mode belongs to the playlist on screen; leaving it ends editing.
         if let Some(uri) = &self.state.editing
@@ -1060,6 +1063,9 @@ impl Core {
                 self.load_books(fx);
             }
             UiAction::ShowSection(Section::Home) => {
+                if !self.state.home.enabled() {
+                    return;
+                }
                 self.state.section = Section::Home;
                 self.state.back_stack.clear();
                 self.state.screen = Screen::Home;

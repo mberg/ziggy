@@ -15,17 +15,36 @@ impl Core {
         let home = &mut self.state.home;
         match update {
             HomeUpdate::Connected => home.link = HomeLink::Connected,
-            HomeUpdate::Disconnected => home.link = HomeLink::Unreachable,
+            HomeUpdate::Disconnected => {
+                home.link = HomeLink::Unreachable;
+                // Unconfirmed taps may never have arrived, so show what was there before.
+                for (id, before) in self.home_undo.drain() {
+                    match before {
+                        Some(before) => home.entities.insert(id, before),
+                        None => home.entities.remove(&id),
+                    };
+                }
+            }
             HomeUpdate::Refused => home.link = HomeLink::Refused,
             HomeUpdate::States(states) => {
-                for (id, state) in states {
+                for (id, mut state) in states {
                     // Home Assistant's word is final, so the tap needs no undoing.
                     self.home_undo.remove(&id);
+                    let selected = home.selected.as_deref() == Some(id.as_str());
+                    if selected && !state.available() {
+                        home.selected = None;
+                        self.home_drag = None;
+                    }
+                    // Answers to earlier drag steps mustn't pull the bar from under the finger.
+                    if let Some(pct) = self.home_drag.filter(|_| selected && state.is_on()) {
+                        state.brightness = Some(brightness_of(pct));
+                    }
                     home.entities.insert(id, state);
                 }
             }
             HomeUpdate::Removed(ids) => {
                 for id in ids {
+                    self.home_undo.remove(&id);
                     home.entities.remove(&id);
                 }
             }
@@ -33,12 +52,15 @@ impl Core {
             HomeUpdate::CallFailed { entity_id, message } => {
                 match self.home_undo.remove(&entity_id) {
                     Some(Some(before)) => {
-                        self.state.home.entities.insert(entity_id, before);
+                        home.entities.insert(entity_id.clone(), before);
                     }
                     Some(None) => {
-                        self.state.home.entities.remove(&entity_id);
+                        home.entities.remove(&entity_id);
                     }
                     None => {}
+                }
+                if home.ran.as_ref().is_some_and(|(id, _)| *id == entity_id) {
+                    home.ran = None;
                 }
                 self.notify(Notice::Home(message), now_ms);
             }
@@ -50,7 +72,7 @@ impl Core {
             UiAction::HomePage(i) => {
                 if i < self.state.home.pages.len() {
                     self.state.home.page = i;
-                    self.state.home.selected = None;
+                    self.home_deselect();
                 }
             }
             UiAction::HomeTile(id) => {
@@ -61,7 +83,7 @@ impl Core {
                     Some(Domain::Light) if state.is_on() => {
                         self.home_call(&id, "turn_off", None, fx);
                         if self.state.home.selected.as_deref() == Some(id.as_str()) {
-                            self.state.home.selected = None;
+                            self.home_deselect();
                         }
                     }
                     Some(Domain::Light) => self.home_call(&id, "turn_on", None, fx),
@@ -70,6 +92,9 @@ impl Core {
                 }
             }
             UiAction::HomeStrip(id) => {
+                if Domain::of(&id) != Some(Domain::Light) {
+                    return;
+                }
                 let Some(state) = self.usable(&id) else {
                     return;
                 };
@@ -81,10 +106,17 @@ impl Core {
                 }
             }
             UiAction::HomeScene(id) => {
-                if self.state.home.link != HomeLink::Connected {
+                let home = &self.state.home;
+                let unavailable = home.entities.get(&id).is_some_and(|s| !s.available());
+                if home.link != HomeLink::Connected || unavailable {
                     return;
                 }
-                self.home_call(&id, "turn_on", None, fx);
+                // Scenes have no on or off to show; the outline is the answer.
+                fx.push(Effect::Home(HomeRequest::Call {
+                    entity_id: id.clone(),
+                    service: "turn_on",
+                    brightness_pct: None,
+                }));
                 self.state.home.ran = Some((id, now_ms + RAN_MS));
             }
             UiAction::HomeBrightness(pct) | UiAction::HomeBrightnessDone(pct) => {
@@ -97,6 +129,7 @@ impl Core {
                 }
                 self.state.home.bar_until_ms = now_ms + BAR_MS;
                 let pct = pct.clamp(1, 100);
+                self.home_drag = if done { None } else { Some(pct) };
                 if done || now_ms.saturating_sub(self.home_sent_ms) >= DRAG_SEND_MS {
                     self.home_sent_ms = now_ms;
                     self.home_call(&id, "turn_on", Some(pct), fx);
@@ -116,19 +149,27 @@ impl Core {
                 let service = if state.is_on() { "turn_off" } else { "turn_on" };
                 self.home_call(&id, service, None, fx);
             }
-            UiAction::HomeBarClose => self.state.home.selected = None,
+            UiAction::HomeBarClose => self.home_deselect(),
             _ => {}
         }
     }
 
     pub(super) fn home_tick(&mut self, now_ms: u64) {
-        let home = &mut self.state.home;
-        if home.selected.is_some() && now_ms >= home.bar_until_ms {
-            home.selected = None;
+        let home = &self.state.home;
+        // A finger still on the bar keeps it.
+        if home.selected.is_some() && now_ms >= home.bar_until_ms && self.home_drag.is_none() {
+            self.home_deselect();
         }
+        let home = &mut self.state.home;
         if home.ran.as_ref().is_some_and(|(_, until)| now_ms >= *until) {
             home.ran = None;
         }
+    }
+
+    /// Puts the music back in the bottom bar.
+    pub(super) fn home_deselect(&mut self) {
+        self.state.home.selected = None;
+        self.home_drag = None;
     }
 
     /// The entity's state when it can be used now.
@@ -154,7 +195,8 @@ impl Core {
             "toggle" => self.state.home.entities.get(id).map(|s| !s.is_on()),
             _ => None,
         };
-        if let Some(on) = on {
+        let tile = Domain::of(id).is_some_and(Domain::is_tile);
+        if let Some(on) = on.filter(|_| tile) {
             self.home_show(id, on, pct);
         }
         fx.push(Effect::Home(HomeRequest::Call {
@@ -176,7 +218,7 @@ impl Core {
             brightness: None,
         });
         state.state = if on { "on" } else { "off" }.into();
-        state.brightness = match (on, pct) {
+        state.brightness = match (Domain::of(id) == Some(Domain::Light) && on, pct) {
             (false, _) => None,
             (true, Some(pct)) => Some(brightness_of(pct)),
             (true, None) => state.brightness.or(Some(255)),
@@ -300,6 +342,7 @@ mod tests {
         set(&mut c, "light.desk", "on", Some(100));
         c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
         c.handle(ui(UiAction::HomeBrightness(30)), 5_000);
+        c.handle(ui(UiAction::HomeBrightnessDone(30)), 5_000);
         c.handle(Input::Tick, 12_000);
         assert!(
             c.state().home.selected.is_some(),
@@ -388,5 +431,200 @@ mod tests {
             1_000,
         );
         assert!(fx.contains(&Effect::Home(HomeRequest::Reconnect)));
+    }
+
+    #[test]
+    fn a_scene_tap_changes_no_entity() {
+        let mut c = home();
+        set(&mut c, "scene.bedtime", "unknown", None);
+        let before = c.state().home.entities.clone();
+        let fx = c.handle(ui(UiAction::HomeScene("scene.bedtime".into())), 1_000);
+        assert!(fx.contains(&call("scene.bedtime", "turn_on", None)));
+        assert_eq!(c.state().home.entities, before);
+        assert!(c.home_undo.is_empty());
+    }
+
+    #[test]
+    fn a_refused_scene_loses_its_outline() {
+        let mut c = home();
+        c.handle(ui(UiAction::HomeScene("scene.bedtime".into())), 1_000);
+        c.handle(
+            Input::Home(HomeUpdate::CallFailed {
+                entity_id: "scene.bedtime".into(),
+                message: "Not found".into(),
+            }),
+            1_100,
+        );
+        assert_eq!(c.state().home.ran, None);
+    }
+
+    #[test]
+    fn scenes_are_blocked_while_unreachable_or_unavailable() {
+        let mut c = home();
+        set(&mut c, "scene.bedtime", "unavailable", None);
+        assert!(
+            home_fx(&c.handle(ui(UiAction::HomeScene("scene.bedtime".into())), 1_000)).is_empty()
+        );
+        set(&mut c, "scene.bedtime", "unknown", None);
+        c.handle(Input::Home(HomeUpdate::Disconnected), 1_000);
+        assert!(
+            home_fx(&c.handle(ui(UiAction::HomeScene("scene.bedtime".into())), 1_000)).is_empty()
+        );
+        assert_eq!(c.state().home.ran, None);
+    }
+
+    fn home_fx(fx: &[Effect]) -> Vec<&Effect> {
+        fx.iter().filter(|e| matches!(e, Effect::Home(_))).collect()
+    }
+
+    #[test]
+    fn answers_to_earlier_drag_steps_dont_move_the_bar() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 1_000);
+        c.handle(ui(UiAction::HomeBrightness(45)), 1_100);
+        set(&mut c, "light.desk", "on", Some(brightness_of(40)));
+        assert_eq!(c.state().home.entities["light.desk"].percent(), Some(45));
+        c.handle(ui(UiAction::HomeBrightnessDone(45)), 1_200);
+        set(&mut c, "light.desk", "on", Some(brightness_of(30)));
+        assert_eq!(
+            c.state().home.entities["light.desk"].percent(),
+            Some(30),
+            "after release it follows Home Assistant"
+        );
+    }
+
+    #[test]
+    fn a_finger_on_the_bar_keeps_it_past_the_timeout() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 1_000);
+        c.handle(Input::Tick, 20_000);
+        assert!(c.state().home.selected.is_some());
+        c.handle(ui(UiAction::HomeBrightnessDone(40)), 20_500);
+        c.handle(Input::Tick, 29_000);
+        assert_eq!(c.state().home.selected, None);
+    }
+
+    #[test]
+    fn clearing_the_selection_ends_a_drag() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 1_000);
+        c.handle(ui(UiAction::HomeBarClose), 1_100);
+        assert_eq!(c.home_drag, None);
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 2_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 2_000);
+        c.handle(ui(UiAction::HomeTile("light.desk".into())), 2_100);
+        assert_eq!(c.home_drag, None);
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 3_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 3_000);
+        c.handle(ui(UiAction::ShowSection(Section::Albums)), 3_100);
+        assert_eq!(c.home_drag, None);
+    }
+
+    #[test]
+    fn a_removed_entity_has_nothing_to_undo() {
+        let mut c = home();
+        set(&mut c, "switch.fan", "off", None);
+        c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_000);
+        c.handle(
+            Input::Home(HomeUpdate::Removed(vec!["switch.fan".into()])),
+            1_100,
+        );
+        assert!(c.home_undo.is_empty());
+        assert!(!c.state().home.entities.contains_key("switch.fan"));
+    }
+
+    #[test]
+    fn losing_the_connection_puts_unconfirmed_taps_back() {
+        let mut c = home();
+        set(&mut c, "switch.fan", "off", None);
+        c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_000);
+        c.handle(Input::Home(HomeUpdate::Disconnected), 1_100);
+        assert!(!c.state().home.entities["switch.fan"].is_on());
+        assert!(c.home_undo.is_empty());
+    }
+
+    #[test]
+    fn only_lights_have_a_strip_or_a_brightness() {
+        let mut c = home();
+        set(&mut c, "switch.fan", "on", None);
+        let fx = c.handle(ui(UiAction::HomeStrip("switch.fan".into())), 1_000);
+        assert!(home_fx(&fx).is_empty());
+        assert_eq!(c.state().home.selected, None);
+        c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_100);
+        c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_200);
+        assert!(c.state().home.entities["switch.fan"].is_on());
+        assert_eq!(c.state().home.entities["switch.fan"].brightness, None);
+    }
+
+    #[test]
+    fn home_cannot_open_without_pages() {
+        let mut c = Core::new(config(), 0).0;
+        c.handle(ui(UiAction::ShowSection(Section::Home)), 0);
+        assert_ne!(c.state().screen, Screen::Home);
+        assert_ne!(c.state().section, Section::Home);
+    }
+
+    #[test]
+    fn a_light_going_unavailable_closes_its_bar() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        set(&mut c, "light.desk", "unavailable", None);
+        assert_eq!(c.state().home.selected, None);
+    }
+
+    #[test]
+    fn switching_pages_closes_the_bar_and_ignores_missing_pages() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        c.handle(ui(UiAction::HomePage(3)), 1_100);
+        assert!(c.state().home.selected.is_some(), "no such page");
+        assert_eq!(c.state().home.page, 0);
+        c.handle(ui(UiAction::HomePage(0)), 1_200);
+        assert_eq!(c.state().home.selected, None);
+    }
+
+    #[test]
+    fn the_strip_of_an_off_light_doesnt_select_it() {
+        let mut c = home();
+        set(&mut c, "light.desk", "off", None);
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        assert!(c.state().home.entities["light.desk"].is_on());
+        assert_eq!(c.state().home.selected, None);
+    }
+
+    #[test]
+    fn a_failure_after_home_assistant_confirmed_changes_nothing() {
+        let mut c = home();
+        set(&mut c, "switch.fan", "off", None);
+        c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_000);
+        set(&mut c, "switch.fan", "on", None);
+        c.handle(
+            Input::Home(HomeUpdate::CallFailed {
+                entity_id: "switch.fan".into(),
+                message: "Timed out".into(),
+            }),
+            1_200,
+        );
+        assert!(c.state().home.entities["switch.fan"].is_on());
+    }
+
+    #[test]
+    fn a_refused_token_blocks_taps() {
+        let mut c = home();
+        set(&mut c, "switch.fan", "off", None);
+        c.handle(Input::Home(HomeUpdate::Refused), 1_000);
+        assert!(home_fx(&c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_100)).is_empty());
+        assert!(
+            home_fx(&c.handle(ui(UiAction::HomeScene("scene.bedtime".into())), 1_200)).is_empty()
+        );
     }
 }
