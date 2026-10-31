@@ -1637,6 +1637,39 @@ fn history_effects(fx: &[Effect]) -> Vec<HistoryCommand> {
 }
 
 #[test]
+fn a_song_announced_again_is_one_play_unless_it_ended_and_started_over() {
+    let mut c = core();
+    c.handle(Input::Player(PlayerUpdate::TrackChanged(track(0))), 0);
+    c.handle(Input::Player(PlayerUpdate::Playing { position_ms: 0 }), 0);
+    // Paused half a minute in, Soloist sends the song again.
+    c.handle(
+        Input::Player(PlayerUpdate::Position {
+            position_ms: 30_000,
+        }),
+        30_000,
+    );
+    let fx = c.handle(Input::Player(PlayerUpdate::TrackChanged(track(0))), 30_000);
+    assert!(
+        history_effects(&fx)
+            .iter()
+            .all(|h| !matches!(h, HistoryCommand::Start(_)))
+    );
+    // On repeat, the song reaches its end and starts again: another play.
+    c.handle(
+        Input::Player(PlayerUpdate::Position {
+            position_ms: 179_000,
+        }),
+        179_000,
+    );
+    let fx = c.handle(Input::Player(PlayerUpdate::TrackChanged(track(0))), 180_000);
+    assert!(
+        history_effects(&fx)
+            .iter()
+            .any(|h| matches!(h, HistoryCommand::Start(_)))
+    );
+}
+
+#[test]
 fn a_song_announced_without_its_details_shows_them_when_they_come() {
     let mut c = core();
     c.handle(Input::Player(PlayerUpdate::TrackChanged(track(0))), 0);

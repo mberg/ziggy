@@ -135,6 +135,8 @@ pub struct Core {
 /// This many songs failing within `FAILED_TRACKS_WINDOW_MS` pauses playback.
 const FAILED_TRACKS_LIMIT: usize = 3;
 const FAILED_TRACKS_WINDOW_MS: u64 = 30_000;
+/// A song this close to its end that starts again is played again, as on repeat.
+const SONG_END_MS: u32 = 10_000;
 /// While offline with the Wi-Fi up, the library is asked again this often.
 const OFFLINE_RETRY_MS: u64 = 30_000;
 
@@ -1831,8 +1833,13 @@ impl Core {
     /// A new song started: finish the last one's listening time and log the new one.
     fn log_track(&mut self, track: &Track, now_ms: u64, fx: &mut Vec<Effect>) {
         self.count_listening(now_ms);
-        // The player can announce the same song twice as it loads; that's one play.
-        if self.logged_uri.as_deref() == Some(track.uri.as_str()) && self.listened_ms < 5_000 {
+        // The player announces the playing song again as it loads, pauses or is asked for its
+        // state; that's one play. Only a song that reached its end and started over is another.
+        let pb = &self.state.playback;
+        let ended = pb.track.as_ref().is_some_and(|t| {
+            t.uri == track.uri && t.duration_ms > 0 && pb.position_ms + SONG_END_MS >= t.duration_ms
+        });
+        if self.logged_uri.as_deref() == Some(track.uri.as_str()) && !ended {
             return;
         }
         self.report_listening(fx);
