@@ -19,6 +19,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Finds Home Assistant on the local network for `ziggy config`.
+mdns-sd = { version = "0.21", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

@@ -98,6 +98,8 @@ pub struct Secrets<'a> {
     /// The Spotify Soloist API key file.
     pub soloist_key: Option<&'a Path>,
     pub vertex_key: Option<&'a Path>,
+    /// A Home Assistant long-lived access token.
+    pub ha_token: Option<&'a Path>,
 }
 
 /// Where the player reads the Soloist API key (its default in the player's config).
@@ -123,6 +125,15 @@ pub fn install_secrets(r: &dyn Remote, secrets: &Secrets) -> anyhow::Result<()> 
     if let Some(key) = secrets.vertex_key {
         let bytes = std::fs::read(key).with_context(|| format!("reading {}", key.display()))?;
         r.upload(&bytes, VERTEX_KEY_PATH, "600", Some("ziggy-player"))?;
+    }
+    if let Some(token) = secrets.ha_token {
+        let bytes = std::fs::read(token).with_context(|| format!("reading {}", token.display()))?;
+        r.upload(
+            &bytes,
+            devconfig::HA_TOKEN_PATH,
+            "600",
+            Some("ziggy-player"),
+        )?;
     }
     Ok(())
 }
@@ -500,6 +511,8 @@ mod tests {
         std::fs::write(&soloist, "spak_x").unwrap();
         let key = dir.path().join("vertex.json");
         std::fs::write(&key, "{\"type\":\"service_account\"}").unwrap();
+        let token = dir.path().join("ha-token");
+        std::fs::write(&token, "eyJ").unwrap();
         let r = FakeRemote::default();
         install_secrets(
             &r,
@@ -507,6 +520,7 @@ mod tests {
                 spotify_dir: dir.path(),
                 soloist_key: Some(&soloist),
                 vertex_key: Some(&key),
+                ha_token: Some(&token),
             },
         )
         .unwrap();
@@ -514,6 +528,7 @@ mod tests {
             "/var/lib/ziggy/soloist-api-key",
             "/var/lib/ziggy/web-auth.json",
             "/var/lib/ziggy/vertex-key.json",
+            "/var/lib/ziggy/ha-token",
         ] {
             let files = r.files.borrow();
             let (_, mode, owner) = &files[path];
