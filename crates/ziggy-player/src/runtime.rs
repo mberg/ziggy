@@ -113,6 +113,49 @@ async fn run(
         cache.clone(),
         inputs.clone(),
     );
+    // Home Assistant: on when the config lists pages, or a pretend house in `--fake`.
+    let home_pages = match &config.home_assistant {
+        Some(ha) => crate::home::types::pages(ha),
+        None if fake => crate::home::service::fake_pages(),
+        None => Vec::new(),
+    };
+    let home = if home_pages.is_empty() {
+        None
+    } else if fake && config.home_assistant.is_none() {
+        Some(crate::home::service::spawn_home(
+            crate::home::service::Backend::Fake,
+            Vec::new(),
+            inputs.clone(),
+        ))
+    } else {
+        let token_file = config.home_token_file().expect("set with home_assistant");
+        match std::fs::read_to_string(&token_file) {
+            Ok(token) => {
+                let ids = home_pages
+                    .iter()
+                    .flat_map(|p| p.tiles.iter().chain(&p.scenes))
+                    .map(|c| c.entity_id.clone())
+                    .collect();
+                Some(crate::home::service::spawn_home(
+                    crate::home::service::Backend::Real {
+                        url: config.home_assistant.as_ref().expect("checked").url.clone(),
+                        token: token.trim().to_string(),
+                    },
+                    ids,
+                    inputs.clone(),
+                ))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "no Home Assistant token at {} ({e}); run `ziggy config`",
+                    token_file.display()
+                );
+                // Queued, so the core sees it once it starts.
+                let _ = inputs.send(Input::Home(crate::app::HomeUpdate::Refused));
+                None
+            }
+        }
+    };
     let sonos_room = match &saved.output {
         Some(crate::settings::Output::Sonos(room)) => Some(room.clone()),
         _ => None,
@@ -191,7 +234,7 @@ async fn run(
         books_user,
         books_config_url: config.audiobookshelf_url.clone(),
         voice: config.voice_model_dir.is_some(),
-        home: Vec::new(),
+        home: home_pages,
     };
     let history =
         crate::history::spawn_history(config.state_dir.join("history.db"), inputs.clone());
@@ -231,6 +274,7 @@ async fn run(
         library,
         history,
         books,
+        home,
         voice_context,
         listen_now,
         bluetooth,
@@ -272,6 +316,8 @@ struct Outputs {
     library: UnboundedSender<LibraryRequest>,
     history: UnboundedSender<crate::app::HistoryCommand>,
     books: UnboundedSender<crate::app::BooksRequest>,
+    /// None when Home Assistant is off.
+    home: Option<UnboundedSender<crate::app::HomeRequest>>,
     voice_context: crate::voice::service::SharedContext,
     listen_now: crate::voice::service::ListenNow,
     bluetooth: Option<UnboundedSender<crate::app::BtCommand>>,
@@ -291,7 +337,11 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             Effect::Books(request) => {
                 let _ = outputs.books.send(request);
             }
-            Effect::Home(_) => {}
+            Effect::Home(request) => {
+                if let Some(home) = &outputs.home {
+                    let _ = home.send(request);
+                }
+            }
             Effect::VoiceListen => {
                 outputs
                     .listen_now
