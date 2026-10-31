@@ -14,7 +14,7 @@ export struct TrackData {
     current: bool,
 }
 
-export enum ScreenKind { grid, detail, now-playing, search, artist, settings, books, book }
+export enum ScreenKind { grid, detail, now-playing, search, artist, settings, books, book, home }
 
 export struct SpeakerRowData {
     address: string,
@@ -32,4 +32,26 @@ export struct SearchRowData {
     image: image,
     has-image: bool,
     uri: string,
+}
+
+// icon: 0 light, 1 plug, 2 fan, 3 group.
+export struct HomeTileData {
+    id: string,
+    name: string,
+    line: string,
+    icon: int,
+    on: bool,
+    split: bool,
+    strip: string,
+    // How bright the strip is drawn, 0-100.
+    level: int,
+    selected: bool,
+    enabled: bool,
+}
+
+export struct HomeSceneData {
+    id: string,
+    name: string,
+    ran: bool,
+    enabled: bool,
 }

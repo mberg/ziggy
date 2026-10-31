@@ -113,6 +113,46 @@ async fn run(
         cache.clone(),
         inputs.clone(),
     );
+    // Home Assistant: on when the config lists pages. `--fake` always uses a pretend house.
+    let (home_pages, home) = match (fake, &config.home_assistant, config.home_token_file()) {
+        (true, _, _) => (
+            crate::home::service::fake_pages(),
+            Some(crate::home::service::spawn_home(
+                crate::home::service::Backend::Fake,
+                Vec::new(),
+                inputs.clone(),
+            )),
+        ),
+        (false, Some(ha), Some(token_file)) => {
+            let pages = crate::home::types::pages(ha);
+            let token = (!pages.is_empty()).then(|| std::fs::read_to_string(&token_file));
+            let home = match token {
+                None => None,
+                Some(Ok(token)) => {
+                    let ids = home_entity_ids(&pages);
+                    Some(crate::home::service::spawn_home(
+                        crate::home::service::Backend::Real {
+                            url: ha.url.clone(),
+                            token: token.trim().to_string(),
+                        },
+                        ids,
+                        inputs.clone(),
+                    ))
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(
+                        "no Home Assistant token at {} ({e}); run `ziggy config`",
+                        token_file.display()
+                    );
+                    // Queued, so the core sees it once it starts.
+                    let _ = inputs.send(Input::Home(crate::app::HomeUpdate::NoToken));
+                    None
+                }
+            };
+            (pages, home)
+        }
+        _ => (Vec::new(), None),
+    };
     let sonos_room = match &saved.output {
         Some(crate::settings::Output::Sonos(room)) => Some(room.clone()),
         _ => None,
@@ -191,6 +231,7 @@ async fn run(
         books_user,
         books_config_url: config.audiobookshelf_url.clone(),
         voice: config.voice_model_dir.is_some(),
+        home: home_pages,
     };
     let history =
         crate::history::spawn_history(config.state_dir.join("history.db"), inputs.clone());
@@ -230,6 +271,7 @@ async fn run(
         library,
         history,
         books,
+        home,
         voice_context,
         listen_now,
         bluetooth,
@@ -271,6 +313,8 @@ struct Outputs {
     library: UnboundedSender<LibraryRequest>,
     history: UnboundedSender<crate::app::HistoryCommand>,
     books: UnboundedSender<crate::app::BooksRequest>,
+    /// None when Home Assistant is off.
+    home: Option<UnboundedSender<crate::app::HomeRequest>>,
     voice_context: crate::voice::service::SharedContext,
     listen_now: crate::voice::service::ListenNow,
     bluetooth: Option<UnboundedSender<crate::app::BtCommand>>,
@@ -289,6 +333,11 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             Effect::Display(mode) => platform.set_display(mode),
             Effect::Books(request) => {
                 let _ = outputs.books.send(request);
+            }
+            Effect::Home(request) => {
+                if let Some(home) = &outputs.home {
+                    let _ = home.send(request);
+                }
             }
             Effect::VoiceListen => {
                 outputs
@@ -410,6 +459,17 @@ fn start_through_web_api(
     })
 }
 
+/// Every entity on the pages, once each, to subscribe to.
+fn home_entity_ids(pages: &[crate::home::types::Page]) -> Vec<String> {
+    pages
+        .iter()
+        .flat_map(|p| p.tiles.iter().chain(&p.scenes))
+        .map(|c| c.entity_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -417,6 +477,22 @@ mod tests {
     use super::*;
     use crate::app::{PlayStatus, UiAction};
     use crate::model::Section;
+
+    #[test]
+    fn an_entity_on_two_pages_is_subscribed_to_once() {
+        let config = Config::parse(
+            "device_name = \"Test\"\nstate_dir = \"/x\"\n\
+             [home_assistant]\nurl = \"http://ha.local:8123\"\n\
+             [[home_assistant.page]]\nname = \"Up\"\ncontrols = [\"light.porch\", \"light.desk\", \"scene.night\"]\n\
+             [[home_assistant.page]]\nname = \"Down\"\ncontrols = [\"light.porch\", \"scene.night\"]\n",
+        )
+        .unwrap();
+        let pages = crate::home::types::pages(config.home_assistant.as_ref().unwrap());
+        assert_eq!(
+            home_entity_ids(&pages),
+            vec!["light.desk", "light.porch", "scene.night"]
+        );
+    }
 
     #[test]
     fn fake_runtime_loads_library_and_plays() {

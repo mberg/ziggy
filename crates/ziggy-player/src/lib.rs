@@ -5,6 +5,7 @@ pub mod audiobooks;
 pub mod bluetooth;
 pub mod config;
 pub mod history;
+pub mod home;
 pub mod images;
 pub mod library;
 pub mod model;

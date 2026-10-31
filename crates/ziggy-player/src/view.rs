@@ -21,6 +21,7 @@ pub enum ScreenView {
     Settings,
     Books,
     Book,
+    Home,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +111,220 @@ pub struct DetailView {
     pub saved: bool,
     /// The artist name under an album's title opens the artist (Back inside a drill-down).
     pub artist_link: bool,
+}
+
+/// The Home screen: one page of Home Assistant controls.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HomeView {
+    pub pages: Vec<String>,
+    pub page: usize,
+    pub tiles: Vec<HomeTileView>,
+    pub scenes: Vec<HomeSceneView>,
+    /// Why the controls don't work right now; empty when they do.
+    pub banner: String,
+    /// The brightness bar, while a light is selected.
+    pub bar: Option<HomeBarView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeTileView {
+    pub id: String,
+    pub name: String,
+    /// Under the name: the room on a mixed page, the state of a switch, a group's size, or why
+    /// it can't be used.
+    pub line: String,
+    pub icon: HomeIcon,
+    pub on: bool,
+    /// Lights have a brightness strip on the right.
+    pub split: bool,
+    /// "Off", or the brightness: "70%".
+    pub strip: String,
+    /// How bright the strip is drawn, 0-100; 0 while off.
+    pub level: u8,
+    pub selected: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeIcon {
+    Light,
+    Plug,
+    Fan,
+    /// A light group.
+    Group,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeSceneView {
+    pub id: String,
+    pub name: String,
+    pub ran: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeBarView {
+    pub name: String,
+    /// 0-100; 0 while off.
+    pub level: u8,
+    pub level_text: String,
+    pub on: bool,
+}
+
+/// A scene's name without the room it's in: "Mud room Dimmed" on the "Mud room" page → "Dimmed".
+/// The first room that starts the name, followed by a space, is taken off; a name that is only
+/// the room stays whole.
+fn without_room(name: &str, rooms: &[&str]) -> String {
+    for room in rooms.iter().map(|r| r.trim()).filter(|r| !r.is_empty()) {
+        let end = name
+            .char_indices()
+            .nth(room.chars().count())
+            .map_or(name.len(), |(i, _)| i);
+        let (head, rest) = name.split_at(end);
+        if head.to_lowercase() != room.to_lowercase() || !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim();
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(c) if c.is_lowercase() => return c.to_uppercase().chain(chars).collect(),
+            Some(_) => return rest.to_string(),
+            None => {}
+        }
+    }
+    name.to_string()
+}
+
+fn home(state: &AppState) -> HomeView {
+    use crate::app::HomeLink;
+    use crate::home::types::Domain;
+    let h = &state.home;
+    let Some(page) = h.pages.get(h.page) else {
+        return HomeView::default();
+    };
+    let connected = h.link == HomeLink::Connected;
+    let ha_name = |c: &crate::home::types::Control| h.ha_name(&c.entity_id);
+    let name_of = |c: &crate::home::types::Control| h.name_of(c);
+    // The page already says which room it is, so scene buttons leave it out.
+    let scene_name = |c: &crate::home::types::Control| {
+        c.name.clone().unwrap_or_else(|| {
+            let area = h.areas.get(&c.entity_id).map_or("", String::as_str);
+            without_room(&ha_name(c), &[&page.name, area])
+        })
+    };
+    let rooms: std::collections::HashSet<&String> = page
+        .tiles
+        .iter()
+        .filter_map(|c| h.areas.get(&c.entity_id))
+        .collect();
+    let mixed = rooms.len() > 1;
+    let mut tiles: Vec<HomeTileView> = page
+        .tiles
+        .iter()
+        .map(|c| {
+            let state = h.entities.get(&c.entity_id);
+            let light = c.domain == Domain::Light;
+            let members = if light {
+                state.map_or(0, |s| s.members)
+            } else {
+                0
+            };
+            let room = if mixed {
+                h.areas.get(&c.entity_id).cloned()
+            } else {
+                None
+            };
+            let (line, enabled) = match state {
+                _ if h.missing.contains(&c.entity_id) => ("Not in Home Assistant".into(), false),
+                None => (String::new(), false),
+                Some(s) if !s.available() => ("Unavailable".into(), false),
+                Some(_) => (String::new(), connected),
+            };
+            // Only what Home Assistant can confirm right now shows as on.
+            let shown = enabled && state.is_some_and(|s| s.is_on());
+            let words = if shown { "On" } else { "Off" };
+            let count = match members {
+                1 => "1 light".to_string(),
+                n => format!("{n} lights"),
+            };
+            let line = match room {
+                _ if !line.is_empty() => line,
+                Some(r) if members > 0 => format!("{r} · {count}"),
+                None if members > 0 => count,
+                room if light || !enabled => room.unwrap_or_default(),
+                Some(r) => format!("{r} · {words}"),
+                None => words.into(),
+            };
+            let percent = state.and_then(|s| s.percent());
+            HomeTileView {
+                id: c.entity_id.clone(),
+                name: name_of(c),
+                line,
+                icon: match c.domain {
+                    _ if members > 0 => HomeIcon::Group,
+                    Domain::Fan => HomeIcon::Fan,
+                    Domain::Switch => HomeIcon::Plug,
+                    _ => HomeIcon::Light,
+                },
+                on: shown,
+                split: light,
+                strip: match percent {
+                    _ if !shown => "Off".into(),
+                    Some(pct) => format!("{pct}%"),
+                    None => "On".into(),
+                },
+                level: if shown { percent.unwrap_or(100) } else { 0 },
+                selected: h.selected.as_deref() == Some(c.entity_id.as_str()),
+                enabled,
+            }
+        })
+        .collect();
+    // Groups first; otherwise the config's order.
+    tiles.sort_by_key(|t| t.icon != HomeIcon::Group);
+    let scenes = page
+        .scenes
+        .iter()
+        .map(|c| HomeSceneView {
+            id: c.entity_id.clone(),
+            name: scene_name(c),
+            ran: h.ran.as_ref().is_some_and(|(id, _)| id == &c.entity_id),
+            enabled: connected
+                && !h.missing.contains(&c.entity_id)
+                && h.entities.get(&c.entity_id).is_none_or(|s| s.available()),
+        })
+        .collect();
+    let bar = h.selected.as_ref().and_then(|id| {
+        let s = h.entities.get(id)?;
+        let control = page.tiles.iter().find(|c| &c.entity_id == id)?;
+        let on = s.is_on();
+        Some(HomeBarView {
+            name: name_of(control),
+            level: if on { s.percent().unwrap_or(100) } else { 0 },
+            level_text: match s.percent() {
+                _ if !on => "Off".into(),
+                Some(pct) => format!("{pct}%"),
+                None => "On".into(),
+            },
+            on,
+        })
+    });
+    HomeView {
+        pages: h.pages.iter().map(|p| p.name.clone()).collect(),
+        page: h.page,
+        tiles,
+        scenes,
+        banner: match h.link {
+            HomeLink::Connected | HomeLink::Connecting => String::new(),
+            HomeLink::Unreachable => "Can't reach Home Assistant. Trying again…".into(),
+            HomeLink::Refused => {
+                "Home Assistant refused Ziggy's sign-in. Run `ziggy config`.".into()
+            }
+            HomeLink::NoToken => {
+                "Ziggy has no Home Assistant token yet. Run `ziggy config`.".into()
+            }
+        },
+        bar,
+    }
 }
 
 /// The Books screen: Continue listening, then every book, filtered as you type.
@@ -448,6 +663,9 @@ pub struct View {
     pub books_enabled: bool,
     pub books: BooksView,
     pub book: Option<BookView>,
+    /// The rail shows Home.
+    pub home_enabled: bool,
+    pub home: HomeView,
     /// Playlists shows a button to make a new, empty playlist.
     pub can_create_playlist: bool,
     /// Recent's chips (albums and playlists, or songs) show on its screen.
@@ -473,6 +691,7 @@ pub fn build(state: &AppState) -> View {
         Screen::Settings => ScreenView::Settings,
         Screen::Books => ScreenView::Books,
         Screen::Book(_) => ScreenView::Book,
+        Screen::Home => ScreenView::Home,
     };
     let grid_section = match state.screen {
         Screen::Grid(section) => section,
@@ -548,6 +767,13 @@ pub fn build(state: &AppState) -> View {
         books_enabled: state.books.enabled,
         books: books_view(state),
         book: book_view(state),
+        home_enabled: state.home.enabled(),
+        // Only the Home screen shows it; the rail needs just `home_enabled`.
+        home: if state.screen == Screen::Home {
+            home(state)
+        } else {
+            HomeView::default()
+        },
         recent_chips: state.screen == Screen::Grid(Section::Recent),
         recent_songs: state.recent_songs,
         recent_song_rows: if state.recent_songs && state.screen == Screen::Grid(Section::Recent) {
@@ -1081,6 +1307,7 @@ fn banner(state: &AppState) -> Option<String> {
         Some(Notice::RemovedFrom(name)) => Some(format!("Removed from {name}")),
         Some(Notice::Created(name)) => Some(format!("Created {name}")),
         Some(Notice::Voice(text)) => Some(text.clone()),
+        Some(Notice::Home(message)) => Some(format!("Home Assistant: {message}")),
         None if !state.speaker_connected => Some("Speaker not connected".into()),
         None => None,
     }
@@ -1565,5 +1792,478 @@ mod tests {
         assert!(!build(c.state()).mini_visible);
         c.handle(ui(UiAction::CloseKeyboard), 5_000);
         assert!(build(c.state()).mini_visible);
+    }
+
+    mod home_view {
+        use super::*;
+        use crate::app::{HomeUpdate, Input, UiAction};
+        use crate::home::types::{Control, Domain, EntityState, Page};
+
+        fn c(id: &str) -> Control {
+            Control {
+                entity_id: id.into(),
+                domain: Domain::of(id).unwrap(),
+                name: None,
+            }
+        }
+
+        fn core_with(pages: Vec<Page>) -> crate::app::Core {
+            let mut core = connecting(pages);
+            core.handle(Input::Home(HomeUpdate::Connected), 0);
+            core
+        }
+
+        /// Before Home Assistant has answered.
+        fn connecting(pages: Vec<Page>) -> crate::app::Core {
+            let mut cfg = crate::app::tests::config();
+            cfg.home = pages;
+            let mut core = crate::app::Core::new(cfg, 0).0;
+            core.handle(Input::Ui(UiAction::ShowSection(Section::Home)), 0);
+            core
+        }
+
+        fn page(tiles: &[&str], scenes: &[&str]) -> Vec<Page> {
+            vec![Page {
+                name: "Room".into(),
+                tiles: tiles.iter().map(|id| c(id)).collect(),
+                scenes: scenes.iter().map(|id| c(id)).collect(),
+            }]
+        }
+
+        fn states(core: &mut crate::app::Core, list: &[(&str, &str, &str, Option<u8>)]) {
+            core.handle(
+                Input::Home(HomeUpdate::States(
+                    list.iter()
+                        .map(|(id, name, s, b)| {
+                            (
+                                id.to_string(),
+                                EntityState {
+                                    state: s.to_string(),
+                                    name: Some(name.to_string()),
+                                    brightness: *b,
+                                    members: 0,
+                                },
+                            )
+                        })
+                        .collect(),
+                )),
+                0,
+            );
+        }
+
+        #[test]
+        fn tiles_show_names_states_and_strips() {
+            let mut core = core_with(vec![Page {
+                name: "Room".into(),
+                tiles: vec![c("light.desk"), c("switch.fan"), c("light.gone")],
+                scenes: vec![c("scene.bedtime")],
+            }]);
+            states(
+                &mut core,
+                &[
+                    ("light.desk", "Desk lamp", "on", Some(178)),
+                    ("switch.fan", "Fan", "off", None),
+                ],
+            );
+            core.handle(
+                Input::Home(HomeUpdate::Removed(vec!["light.gone".into()])),
+                0,
+            );
+            let v = build(core.state());
+            assert!(v.home_enabled);
+            assert_eq!(v.home.pages, vec!["Room".to_string()]);
+            let desk = &v.home.tiles[0];
+            assert_eq!(
+                (desk.name.as_str(), desk.on, desk.split, desk.strip.as_str(),),
+                ("Desk lamp", true, true, "70%")
+            );
+            assert_eq!(desk.level, 70, "the strip is drawn as bright as the light");
+            assert_eq!(desk.line, "", "a one-room page doesn't repeat the room");
+            let fan = &v.home.tiles[1];
+            assert_eq!((fan.split, fan.line.as_str()), (false, "Off"));
+            let gone = &v.home.tiles[2];
+            assert_eq!(
+                (gone.enabled, gone.line.as_str()),
+                (false, "Not in Home Assistant")
+            );
+            assert_eq!(
+                v.home.scenes[0].name, "Bedtime",
+                "before Home Assistant answers, a tidied ID"
+            );
+            assert_eq!(
+                crate::home::types::tidy_id("light.bay_window"),
+                "Bay window"
+            );
+        }
+
+        #[test]
+        fn mixed_pages_show_rooms_and_the_bar_shows_the_selected_light() {
+            let mut core = core_with(vec![Page {
+                name: "Everyday".into(),
+                tiles: vec![c("light.porch"), c("light.desk")],
+                scenes: vec![],
+            }]);
+            states(
+                &mut core,
+                &[
+                    ("light.porch", "Porch", "off", None),
+                    ("light.desk", "Desk", "on", Some(255)),
+                ],
+            );
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [
+                        ("light.porch".to_string(), "Outside".to_string()),
+                        ("light.desk".to_string(), "Bedroom".to_string()),
+                    ]
+                    .into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[0].line, "Outside");
+            assert_eq!(v.home.tiles[0].strip, "Off");
+            assert_eq!(v.home.tiles[0].level, 0);
+            core.handle(Input::Ui(UiAction::HomeStrip("light.desk".into())), 0);
+            let bar = build(core.state()).home.bar.unwrap();
+            assert_eq!(
+                (
+                    bar.name.as_str(),
+                    bar.level,
+                    bar.level_text.as_str(),
+                    bar.on
+                ),
+                ("Desk", 100, "100%", true)
+            );
+        }
+
+        #[test]
+        fn unreachable_and_refused_say_so() {
+            let mut core = core_with(vec![Page {
+                name: "Room".into(),
+                tiles: vec![c("light.desk")],
+                scenes: vec![],
+            }]);
+            core.handle(Input::Home(HomeUpdate::Disconnected), 0);
+            let v = build(core.state());
+            assert_eq!(v.home.banner, "Can't reach Home Assistant. Trying again…");
+            assert!(!v.home.tiles[0].enabled);
+            core.handle(Input::Home(HomeUpdate::Refused), 0);
+            assert!(build(core.state()).home.banner.contains("ziggy config"));
+        }
+
+        #[test]
+        fn before_home_assistant_answers_tiles_are_greyed_with_tidied_names() {
+            let core = connecting(page(
+                &["light.bay_window", "switch.fan"],
+                &["scene.bedtime"],
+            ));
+            let v = build(core.state());
+            assert_eq!(v.home.banner, "");
+            for (tile, name) in v.home.tiles.iter().zip(["Bay window", "Fan"]) {
+                assert_eq!(tile.name, name);
+                assert_eq!(tile.line, "", "nothing known yet, so nothing claimed");
+                assert!(!tile.enabled && !tile.on);
+                assert_eq!((tile.strip.as_str(), tile.level), ("Off", 0));
+            }
+            assert!(!v.home.scenes[0].enabled);
+        }
+
+        #[test]
+        fn a_tile_with_no_state_yet_is_greyed_but_not_missing() {
+            let core = core_with(page(&["light.desk"], &[]));
+            let tile = &build(core.state()).home.tiles[0];
+            assert_eq!((tile.enabled, tile.line.as_str()), (false, ""));
+        }
+
+        #[test]
+        fn the_config_name_wins_over_home_assistants() {
+            let mut pages = page(&["light.desk"], &[]);
+            pages[0].tiles[0].name = Some("Reading light".into());
+            let mut core = core_with(pages);
+            states(&mut core, &[("light.desk", "Desk lamp", "on", None)]);
+            assert_eq!(build(core.state()).home.tiles[0].name, "Reading light");
+        }
+
+        #[test]
+        fn while_unreachable_known_tiles_are_greyed_and_claim_nothing() {
+            let mut core = core_with(page(&["light.desk", "switch.fan"], &["scene.bedtime"]));
+            states(
+                &mut core,
+                &[
+                    ("light.desk", "Desk", "on", Some(255)),
+                    ("switch.fan", "Fan", "on", None),
+                ],
+            );
+            core.handle(Input::Home(HomeUpdate::Disconnected), 0);
+            let v = build(core.state());
+            let desk = &v.home.tiles[0];
+            assert!(!desk.enabled && !desk.on);
+            assert_eq!((desk.strip.as_str(), desk.level), ("Off", 0));
+            let fan = &v.home.tiles[1];
+            assert_eq!((fan.enabled, fan.on, fan.line.as_str()), (false, false, ""));
+            assert!(!v.home.scenes[0].enabled);
+        }
+
+        #[test]
+        fn scenes_show_when_they_ran_and_when_they_cannot() {
+            let mut core = core_with(page(&[], &["scene.bedtime", "script.story"]));
+            core.handle(Input::Ui(UiAction::HomeScene("scene.bedtime".into())), 0);
+            states(&mut core, &[("script.story", "Story", "unavailable", None)]);
+            let v = build(core.state());
+            assert!(v.home.scenes[0].ran && v.home.scenes[0].enabled);
+            assert!(!v.home.scenes[1].ran);
+            assert!(
+                !v.home.scenes[1].enabled,
+                "Home Assistant says it's unavailable"
+            );
+        }
+
+        #[test]
+        fn a_scene_not_in_home_assistant_is_greyed() {
+            let mut core = core_with(page(&[], &["scene.bedtime", "scene.gone"]));
+            core.handle(
+                Input::Home(HomeUpdate::Removed(vec!["scene.gone".into()])),
+                0,
+            );
+            let v = build(core.state());
+            assert!(v.home.scenes[0].enabled);
+            assert!(!v.home.scenes[1].enabled);
+        }
+
+        #[test]
+        fn without_room_takes_off_the_room() {
+            let bed = ["Master bedroom"];
+            assert_eq!(
+                without_room("Master Bedroom Nightlight", &bed),
+                "Nightlight"
+            );
+            assert_eq!(
+                without_room("Master Bedroom Matt Reading", &bed),
+                "Matt Reading"
+            );
+            assert_eq!(
+                without_room("Master Bedroom Leigh reading", &bed),
+                "Leigh reading"
+            );
+            assert_eq!(without_room("Mud room Dimmed", &["Mud room"]), "Dimmed");
+            assert_eq!(without_room("MUD ROOM dimmed", &["mud room"]), "Dimmed");
+            assert_eq!(without_room("Élan salon Soir", &["élan SALON"]), "Soir");
+        }
+
+        #[test]
+        fn without_room_keeps_names_it_cannot_shorten() {
+            assert_eq!(without_room("Mud room", &["Mud room"]), "Mud room");
+            assert_eq!(without_room("Mud room  ", &["Mud room"]), "Mud room  ");
+            assert_eq!(without_room("Mudroom Bright", &["Mud"]), "Mudroom Bright");
+            assert_eq!(
+                without_room("Mudroom Bright", &["Mud room"]),
+                "Mudroom Bright"
+            );
+            assert_eq!(without_room("Bedtime", &["Kitchen"]), "Bedtime");
+            assert_eq!(without_room("Bedtime", &["", "  "]), "Bedtime");
+        }
+
+        #[test]
+        fn without_room_falls_back_to_the_area() {
+            let rooms = ["Upstairs", "Mud room"];
+            assert_eq!(without_room("Mud room Dimmed", &rooms), "Dimmed");
+            assert_eq!(without_room("Upstairs All off", &rooms), "All off");
+        }
+
+        #[test]
+        fn scene_buttons_leave_out_the_room() {
+            let mut pages = page(
+                &["light.lamp"],
+                &[
+                    "scene.nightlight",
+                    "scene.reading",
+                    "scene.dimmed",
+                    "scene.named",
+                ],
+            );
+            pages[0].name = "Master bedroom".into();
+            pages[0].scenes[3].name = Some("Master Bedroom Glow".into());
+            let mut core = core_with(pages);
+            states(
+                &mut core,
+                &[
+                    ("light.lamp", "Master Bedroom Lamp", "on", None),
+                    ("scene.nightlight", "Master Bedroom Nightlight", "", None),
+                    ("scene.reading", "Master Bedroom Leigh reading", "", None),
+                    ("scene.dimmed", "Mud room Dimmed", "", None),
+                    ("scene.named", "Master Bedroom Ignored", "", None),
+                ],
+            );
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [("scene.dimmed".to_string(), "Mud room".to_string())].into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            let names: Vec<&str> = v.home.scenes.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "Nightlight",
+                    "Leigh reading",
+                    "Dimmed",
+                    "Master Bedroom Glow"
+                ],
+                "a name from the config is kept as is"
+            );
+            assert_eq!(
+                v.home.tiles[0].name, "Master Bedroom Lamp",
+                "tiles keep the whole name"
+            );
+        }
+
+        /// Makes an entity a light group of `members`.
+        fn group(core: &mut crate::app::Core, id: &str, name: &str, members: u16) {
+            core.handle(
+                Input::Home(HomeUpdate::States(vec![(
+                    id.to_string(),
+                    EntityState {
+                        state: "on".into(),
+                        name: Some(name.into()),
+                        brightness: Some(255),
+                        members,
+                    },
+                )])),
+                0,
+            );
+        }
+
+        #[test]
+        fn light_groups_show_as_groups_first_on_the_page() {
+            let mut core = core_with(page(
+                &["light.desk", "switch.fan", "light.mud_room", "light.hall"],
+                &[],
+            ));
+            states(
+                &mut core,
+                &[
+                    ("light.desk", "Desk", "off", None),
+                    ("switch.fan", "Fan", "off", None),
+                ],
+            );
+            group(&mut core, "light.mud_room", "Mud room", 4);
+            group(&mut core, "light.hall", "Hall", 2);
+            let v = build(core.state());
+            let ids: Vec<&str> = v.home.tiles.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["light.mud_room", "light.hall", "light.desk", "switch.fan"],
+                "groups first, otherwise the config's order"
+            );
+            let mud = &v.home.tiles[0];
+            assert_eq!(mud.icon, HomeIcon::Group);
+            assert_eq!(
+                (mud.line.as_str(), mud.split, mud.strip.as_str(), mud.on),
+                ("4 lights", true, "100%", true)
+            );
+            assert_eq!(v.home.tiles[1].line, "2 lights");
+            assert_eq!(v.home.tiles[2].icon, HomeIcon::Light);
+            assert_eq!(v.home.tiles[2].line, "");
+        }
+
+        #[test]
+        fn a_group_on_a_mixed_page_shows_its_room() {
+            let mut core = core_with(page(&["light.porch", "light.mud_room"], &[]));
+            states(&mut core, &[("light.porch", "Porch", "off", None)]);
+            group(&mut core, "light.mud_room", "Mud room", 4);
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [
+                        ("light.porch".to_string(), "Outside".to_string()),
+                        ("light.mud_room".to_string(), "Mud room".to_string()),
+                    ]
+                    .into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[0].line, "Mud room · 4 lights");
+            assert_eq!(v.home.tiles[1].line, "Outside");
+        }
+
+        #[test]
+        fn before_home_assistant_answers_a_group_is_a_light() {
+            let core = connecting(page(&["light.desk", "light.mud_room"], &[]));
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[1].icon, HomeIcon::Light);
+            assert_eq!(v.home.tiles[1].id, "light.mud_room");
+        }
+
+        #[test]
+        fn home_is_built_only_on_its_screen() {
+            let mut core = core_with(page(&["light.desk"], &["scene.bedtime"]));
+            assert_eq!(build(core.state()).home.tiles.len(), 1);
+            core.handle(Input::Ui(UiAction::ShowSection(Section::Playlists)), 0);
+            let v = build(core.state());
+            assert!(v.home_enabled, "the rail still shows Home");
+            assert_eq!(v.home, HomeView::default());
+        }
+
+        #[test]
+        fn icons_follow_the_domain() {
+            let core = core_with(page(&["light.a", "switch.b", "fan.c"], &[]));
+            let icons: Vec<HomeIcon> = build(core.state())
+                .home
+                .tiles
+                .iter()
+                .map(|t| t.icon)
+                .collect();
+            assert_eq!(icons, vec![HomeIcon::Light, HomeIcon::Plug, HomeIcon::Fan]);
+        }
+
+        #[test]
+        fn a_light_without_brightness_says_on() {
+            let mut core = core_with(page(&["light.desk"], &[]));
+            states(&mut core, &[("light.desk", "Desk", "on", None)]);
+            let tile = &build(core.state()).home.tiles[0];
+            assert_eq!(
+                (tile.strip.as_str(), tile.level, tile.on),
+                ("On", 100, true)
+            );
+            assert!(!tile.selected);
+            core.handle(Input::Ui(UiAction::HomeStrip("light.desk".into())), 0);
+            let v = build(core.state());
+            assert!(v.home.tiles[0].selected);
+            let bar = v.home.bar.unwrap();
+            assert_eq!((bar.level, bar.level_text.as_str()), (100, "On"));
+        }
+
+        #[test]
+        fn one_known_room_is_not_a_mixed_page() {
+            let mut core = core_with(page(&["light.desk", "switch.fan"], &[]));
+            states(
+                &mut core,
+                &[
+                    ("light.desk", "Desk", "on", Some(255)),
+                    ("switch.fan", "Fan", "off", None),
+                ],
+            );
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [("light.desk".to_string(), "Study".to_string())].into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[0].line, "");
+            assert_eq!(v.home.tiles[1].line, "Off");
+        }
+
+        #[test]
+        fn no_token_says_how_to_fix_it() {
+            let mut core = connecting(page(&["light.desk"], &[]));
+            core.handle(Input::Home(HomeUpdate::NoToken), 0);
+            assert_eq!(
+                build(core.state()).home.banner,
+                "Ziggy has no Home Assistant token yet. Run `ziggy config`."
+            );
+        }
     }
 }

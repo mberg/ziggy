@@ -428,11 +428,12 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         install::install_wake_model(&ssh)?;
         ok("Wake-word model ready");
     }
-    let config = devconfig::new_config(&devconfig::Choices {
+    let mut config = devconfig::new_config(&devconfig::Choices {
         device_name: device_name.clone(),
         audiobookshelf_url: audiobookshelf_url.clone(),
         voice: voice.clone(),
     });
+    devconfig::keep_home_assistant(&mut config, existing.as_ref());
     install::write_config(&ssh, &config)?;
     install::install_secrets(
         &ssh,
@@ -440,6 +441,7 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
             spotify_dir: &spotify_dir,
             soloist_key: Some(&soloist_key),
             vertex_key: vertex_key.as_deref(),
+            ha_token: None,
         },
     )?;
     ok("Settings and sign-ins copied");
@@ -489,6 +491,9 @@ pub fn config(host: &str) -> anyhow::Result<()> {
     let mut t = install::read_config(&ssh)?
         .context("this Pi has no Ziggy settings yet; run `ziggy setup` first")?;
     let mut key_to_copy: Option<PathBuf> = None;
+    // Kept in memory only, until it's copied to the player.
+    let mut ha_token: Option<String> = None;
+    let mut remove_ha_token = false;
     let mut model_needed = false;
     let mut changed = false;
     loop {
@@ -544,6 +549,64 @@ pub fn config(host: &str) -> anyhow::Result<()> {
             {
                 say("Turn voice control on first.");
                 continue;
+            }
+            Setting::HomeAssistant => {
+                if t.contains_key("home_assistant") && yes("Turn Home Assistant off?", false)? {
+                    devconfig::home_assistant_off(&mut t);
+                    ha_token = None;
+                    remove_ha_token = true;
+                } else {
+                    remove_ha_token = false;
+                    let current = t
+                        .get("home_assistant")
+                        .and_then(|h| h.get("url"))
+                        .and_then(|u| u.as_str())
+                        .map(str::to_string);
+                    let initial = match current {
+                        Some(url) => url,
+                        None => {
+                            say("Looking for Home Assistant on the network…");
+                            find_home_assistant(Duration::from_secs(3))
+                                .unwrap_or_else(|| "http://".into())
+                        }
+                    };
+                    let url: String = Input::with_theme(&theme())
+                        .with_prompt("Home Assistant address")
+                        .with_initial_text(initial)
+                        .interact_text()?;
+                    devconfig::set_home_assistant(&mut t, &url);
+                    say(
+                        "In Home Assistant, make a non-admin user for Ziggy, sign in as it, and create a\n\
+                         long-lived access token under its profile → Security.",
+                    );
+                    loop {
+                        let token: String = Password::with_theme(&theme())
+                            .with_prompt("Access token (empty keeps the one on the player)")
+                            .allow_empty_password(true)
+                            .interact()?;
+                        let token = token.trim();
+                        if !token.is_empty() {
+                            ha_token = Some(token.to_string());
+                            break;
+                        }
+                        if ha_token.is_some() || install::has_ha_token(&ssh) {
+                            break;
+                        }
+                        say("The player has no token yet; paste the one from Home Assistant.");
+                    }
+                    if !t["home_assistant"]
+                        .as_table()
+                        .is_some_and(|h| h.contains_key("page"))
+                    {
+                        say(&format!(
+                            "Home shows once {} lists pages, e.g.\n\n\
+                             [[home_assistant.page]]\n\
+                             name = \"Living room\"\n\
+                             controls = [\"light.ceiling\", {{ entity = \"light.desk\", name = \"Desk lamp\" }}, \"scene.evening\"]\n",
+                            devconfig::CONFIG_PATH
+                        ));
+                    }
+                }
             }
             Setting::Volume | Setting::DimAfter | Setting::OffAfter => {
                 let key = setting.key().expect("a key");
@@ -603,16 +666,20 @@ pub fn config(host: &str) -> anyhow::Result<()> {
         say("Downloading the wake-word model…");
         install::install_wake_model(&ssh)?;
     }
-    if let Some(key) = &key_to_copy {
+    if key_to_copy.is_some() || ha_token.is_some() {
         let dir = store::device_dir(&ssh.host)?;
         install::install_secrets(
             &ssh,
             &Secrets {
                 spotify_dir: &dir.join("none"),
                 soloist_key: None,
-                vertex_key: Some(key),
+                vertex_key: key_to_copy.as_deref(),
+                ha_token: ha_token.as_deref(),
             },
         )?;
+    }
+    if remove_ha_token {
+        install::remove_ha_token(&ssh)?;
     }
     install::write_config(&ssh, &t)?;
     say("Saved. Restarting the player…");
@@ -626,6 +693,43 @@ pub fn config(host: &str) -> anyhow::Result<()> {
     } else {
         bail!("the player didn't start after the change:\n{logs}")
     }
+}
+
+/// Home Assistant's own address, if one answers on the local network within `wait`.
+fn find_home_assistant(wait: Duration) -> Option<String> {
+    let mdns = mdns_sd::ServiceDaemon::new().ok()?;
+    let events = mdns.browse("_home-assistant._tcp.local.").ok()?;
+    let deadline = Instant::now() + wait;
+    let mut found = None;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match events.recv_timeout(left) {
+            Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => {
+                let txt = ["internal_url", "base_url"]
+                    .iter()
+                    .filter_map(|k| info.get_property_val_str(k));
+                let v4 = info.get_addresses_v4().into_iter().min();
+                found = home_assistant_url(txt, v4, info.get_port());
+                if found.is_some() {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    let _ = mdns.shutdown();
+    found
+}
+
+/// The first http:// URL Home Assistant announces, or else its address and port.
+fn home_assistant_url<'a>(
+    mut txt: impl Iterator<Item = &'a str>,
+    v4: Option<std::net::Ipv4Addr>,
+    port: u16,
+) -> Option<String> {
+    txt.find(|u| u.starts_with("http://"))
+        .map(|u| u.trim_end_matches('/').to_string())
+        .or_else(|| v4.map(|ip| format!("http://{ip}:{port}")))
 }
 
 fn connect(host: &str) -> anyhow::Result<Ssh> {
@@ -655,6 +759,7 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
                 spotify_dir: &store::device_dir(&ssh.host)?.join("none"),
                 soloist_key: Some(&key),
                 vertex_key: None,
+                ha_token: None,
             },
         )?;
         ok("Switched to PipeWire, with the Soloist key copied");
@@ -745,6 +850,7 @@ pub async fn signin(host: &str) -> anyhow::Result<()> {
             spotify_dir: &dir,
             soloist_key: None,
             vertex_key: None,
+            ha_token: None,
         },
     )?;
     // Playback is signed in separately, on the Pi; only a change of account needs it again.
@@ -772,6 +878,25 @@ mod tests {
         assert_eq!(name_from_host("ziggy-kitchen.local"), "Kitchen");
         assert_eq!(name_from_host("pi@den.local"), "Den");
         assert_eq!(name_from_host("192.168.1.20"), "192");
+    }
+
+    #[test]
+    fn home_assistant_is_found_by_its_url_or_else_its_address() {
+        let ip = Some(std::net::Ipv4Addr::new(192, 168, 1, 69));
+        assert_eq!(
+            home_assistant_url(
+                ["https://ha.example.com", "http://ha.local:8123/"].into_iter(),
+                ip,
+                8123
+            )
+            .as_deref(),
+            Some("http://ha.local:8123")
+        );
+        assert_eq!(
+            home_assistant_url(["https://ha.example.com"].into_iter(), ip, 8123).as_deref(),
+            Some("http://192.168.1.69:8123")
+        );
+        assert_eq!(home_assistant_url(std::iter::empty(), None, 8123), None);
     }
 
     #[test]

@@ -21,3 +21,10 @@ off_after_secs = 600
 # wake_threshold = 0.25           # lower wakes more readily
 # microphone = "USB"              # part of the microphone's name; the default input otherwise
 # gemini_model = "gemini-3.5-flash-lite"
+# Home Assistant controls on a Home screen. The token (a non-admin user's long-lived access token)
+# is read from <state_dir>/ha-token; `ziggy config` copies it there.
+# [home_assistant]
+# url = "http://192.168.1.69:8123"
+# [[home_assistant.page]]
+# name = "Living room"
+# controls = ["light.ceiling", { entity = "light.desk", name = "Desk lamp" }, "switch.fairy_lights", "scene.evening"]

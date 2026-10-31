@@ -16,6 +16,8 @@ pub enum Section {
     Settings,
     /// Audiobooks, when an Audiobookshelf server is set up.
     Books,
+    /// Home Assistant controls, when set up.
+    Home,
 }
 
 impl Section {
@@ -29,6 +31,7 @@ impl Section {
             Section::Recent => 5,
             Section::Settings => 6,
             Section::Books => 7,
+            Section::Home => 8,
         }
     }
 
@@ -41,6 +44,7 @@ impl Section {
             5 => Section::Recent,
             6 => Section::Settings,
             7 => Section::Books,
+            8 => Section::Home,
             _ => Section::Playlists,
         }
     }
@@ -55,6 +59,7 @@ impl Section {
             Section::Search => "Search",
             Section::Settings => "Settings",
             Section::Books => "Books",
+            Section::Home => "Home",
         }
     }
 
@@ -68,6 +73,7 @@ impl Section {
             Section::Search => "section-search",
             Section::Settings => "section-settings",
             Section::Books => "section-books",
+            Section::Home => "section-home",
         }
     }
 }

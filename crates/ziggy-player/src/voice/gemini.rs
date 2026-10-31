@@ -5,7 +5,7 @@ use std::time::Duration;
 use base64::Engine;
 use serde_json::{Value, json};
 
-use crate::app::{SearchKind, VoiceCommand, VoiceContext};
+use crate::app::{HomeAction, SearchKind, VoiceCommand, VoiceContext};
 
 /// Fastest of the models tested (about 1.1–1.6 s through Vertex) and as accurate on requests.
 pub const DEFAULT_MODEL: &str = "gemini-3.5-flash-lite";
@@ -53,6 +53,21 @@ fn instructions(context: &VoiceContext) -> String {
          - If the audio isn't a request for the player, or you can't tell what was asked, \
          call not_understood.\n\n",
     );
+    if !context.home.is_empty() {
+        text.push_str(
+            "The player also controls lights, plugs and scenes in the house, listed under Home \
+             below. For a request to switch, dim or brighten them, or to run a scene, call \
+             home_control with their ids from that list, never others.\n\
+             - A light group is all the lights of a room: for the whole room (\"turn off the \
+             mud room\") use the group; for one light use that light.\n\
+             - \"All the lights\" or \"everything\" means every light, plug and fan in the \
+             list.\n\
+             - With no light named, \"brighter\" or \"dimmer\" means the lights that are on.\n\
+             - A scene is run with action run; its name may leave out the room (\"nightlight \
+             in the bedroom\" is the bedroom's Nightlight scene).\n\
+             - If you can't tell which controls were meant, call not_understood.\n\n",
+        );
+    }
     match &context.now_playing {
         Some(track) if context.playing => text.push_str(&format!("Playing now: {track}.\n")),
         Some(track) => text.push_str(&format!("Paused: {track}.\n")),
@@ -68,11 +83,20 @@ fn instructions(context: &VoiceContext) -> String {
             item.uri, item.kind, item.name, item.by
         ));
     }
+    if !context.home.is_empty() {
+        text.push_str("\nHome (id | kind | name | room | now):\n");
+        for c in &context.home {
+            text.push_str(&format!(
+                "{} | {} | {} | {} | {}\n",
+                c.entity_id, c.kind, c.name, c.room, c.now
+            ));
+        }
+    }
     text
 }
 
-fn functions() -> Value {
-    json!([
+fn functions(home: bool) -> Value {
+    let mut list = json!([
         {
             "name": "play_item",
             "description": "Play a playlist, album, artist or Liked Songs from the library list.",
@@ -149,7 +173,23 @@ fn functions() -> Value {
             "description": "The audio isn't a request for the player, or it's unclear.",
             "parameters": {"type": "object", "properties": {}}
         }
-    ])
+    ]);
+    if home {
+        list.as_array_mut().expect("a list").push(json!({
+            "name": "home_control",
+            "description": "Switch, dim or brighten lights, plugs and fans in the Home list, or run its scenes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ids": {"type": "array", "items": {"type": "string"}, "description": "Ids from the Home list."},
+                    "action": {"type": "string", "enum": ["on", "off", "brightness", "brighter", "dimmer", "run"]},
+                    "percent": {"type": "integer", "description": "For brightness: 0 to 100."}
+                },
+                "required": ["ids", "action"]
+            }
+        }));
+    }
+    list
 }
 
 /// The generateContent request body.
@@ -165,7 +205,7 @@ pub fn request(context: &VoiceContext, audio: &[f32]) -> Value {
                 }
             }]
         }],
-        "tools": [{"functionDeclarations": functions()}],
+        "tools": [{"functionDeclarations": functions(!context.home.is_empty())}],
         "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
         "generationConfig": {"temperature": 0}
     })
@@ -220,6 +260,28 @@ pub fn parse_reply(reply: &Value) -> Option<VoiceCommand> {
             // "Add this" with no playlist named means heart it.
             None => VoiceCommand::LikeSong,
         }),
+        "home_control" => {
+            let ids: Vec<String> = args["ids"]
+                .as_array()?
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect();
+            if ids.is_empty() {
+                return None;
+            }
+            let action = match text("action")? {
+                "on" => HomeAction::On,
+                "off" => HomeAction::Off,
+                "brightness" => HomeAction::Brightness(number("percent")?.min(100) as u8),
+                "brighter" => HomeAction::Brighter,
+                "dimmer" => HomeAction::Dimmer,
+                "run" => HomeAction::Run,
+                _ => return None,
+            };
+            Some(VoiceCommand::Home { ids, action })
+        }
         _ => None,
     }
 }
@@ -337,6 +399,7 @@ mod tests {
                 name: "Road Trip".into(),
                 by: "sam".into(),
             }],
+            ..VoiceContext::default()
         }
     }
 
@@ -431,6 +494,78 @@ mod tests {
         );
         assert_eq!(
             parse_reply(&reply("save_playing", json!({"what": "artist"}))),
+            None
+        );
+    }
+
+    #[test]
+    fn home_controls_are_offered_only_when_the_player_has_them() {
+        let mut ctx = context();
+        let body = request(&ctx, &[0.0; 1600]);
+        let names = |body: &Value| -> Vec<String> {
+            body["tools"][0]["functionDeclarations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(!names(&body).contains(&"home_control".to_string()));
+        assert!(
+            !body["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Home (")
+        );
+        ctx.home = vec![crate::app::VoiceHomeControl {
+            entity_id: "light.mud_room".into(),
+            kind: "light group of 4".into(),
+            name: "Mud room".into(),
+            room: "Mud room".into(),
+            now: "on at 70%".into(),
+        }];
+        let body = request(&ctx, &[0.0; 1600]);
+        assert!(names(&body).contains(&"home_control".to_string()));
+        assert!(
+            body["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("light.mud_room | light group of 4 | Mud room | Mud room | on at 70%")
+        );
+    }
+
+    #[test]
+    fn home_replies_become_commands() {
+        let home = |args: Value| parse_reply(&reply("home_control", args));
+        assert_eq!(
+            home(json!({"ids": ["light.mr", "light.lr"], "action": "off"})),
+            Some(VoiceCommand::Home {
+                ids: vec!["light.mr".into(), "light.lr".into()],
+                action: HomeAction::Off
+            })
+        );
+        assert_eq!(
+            home(json!({"ids": ["light.mr"], "action": "brightness", "percent": 140})),
+            Some(VoiceCommand::Home {
+                ids: vec!["light.mr".into()],
+                action: HomeAction::Brightness(100)
+            })
+        );
+        assert_eq!(
+            home(json!({"ids": ["scene.nightlight"], "action": "run"})),
+            Some(VoiceCommand::Home {
+                ids: vec!["scene.nightlight".into()],
+                action: HomeAction::Run
+            })
+        );
+        assert_eq!(home(json!({"ids": [], "action": "on"})), None, "no ids");
+        assert_eq!(
+            home(json!({"ids": ["light.mr"], "action": "brightness"})),
+            None,
+            "no level"
+        );
+        assert_eq!(
+            home(json!({"ids": ["light.mr"], "action": "explode"})),
             None
         );
     }
@@ -555,5 +690,136 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// Home requests, spoken with `say`, against a house like Matt's:
+    /// `VERTEX_KEY_FILE=… cargo test -- --ignored live_gemini_home --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_gemini_home() {
+        let Ok(path) = std::env::var("VERTEX_KEY_FILE") else {
+            return;
+        };
+        let backend = Backend::Vertex {
+            account: Box::new(
+                crate::voice::google_auth::ServiceAccount::load(std::path::Path::new(&path))
+                    .unwrap(),
+            ),
+            location: "global".into(),
+        };
+        let row = |id: &str, kind: &str, name: &str, room: &str, now: &str| {
+            crate::app::VoiceHomeControl {
+                entity_id: id.into(),
+                kind: kind.into(),
+                name: name.into(),
+                room: room.into(),
+                now: now.into(),
+            }
+        };
+        let mut ctx = context();
+        ctx.home = vec![
+            row(
+                "light.master_bedroom",
+                "light group of 2",
+                "Master bedroom",
+                "Master bedroom",
+                "on at 70%",
+            ),
+            row("light.mr", "light", "MR", "Master bedroom", "on at 70%"),
+            row("light.lr", "light", "LR", "Master bedroom", "on at 70%"),
+            row(
+                "scene.master_bedroom_nightlight",
+                "scene",
+                "Master bedroom Nightlight",
+                "Master bedroom",
+                "",
+            ),
+            row(
+                "scene.master_bedroom_dimmed",
+                "scene",
+                "Master bedroom Dimmed",
+                "Master bedroom",
+                "",
+            ),
+            row(
+                "light.mud_room",
+                "light group of 4",
+                "Mud room",
+                "Mud room",
+                "off",
+            ),
+            row("light.mud_3", "light", "Mud 3", "Mud room", "off"),
+            row(
+                "scene.mud_room_bright",
+                "scene",
+                "Mud room Bright",
+                "Mud room",
+                "",
+            ),
+        ];
+        let home = |ids: &[&str], action: HomeAction| {
+            Some(VoiceCommand::Home {
+                ids: ids.iter().map(|s| s.to_string()).collect(),
+                action,
+            })
+        };
+        let cases = [
+            (
+                "turn off the mud room",
+                home(&["light.mud_room"], HomeAction::Off),
+            ),
+            (
+                "turn on the mudroom lights",
+                home(&["light.mud_room"], HomeAction::On),
+            ),
+            (
+                "dim m r to thirty percent",
+                home(&["light.mr"], HomeAction::Brightness(30)),
+            ),
+            (
+                "bedroom nightlight",
+                home(&["scene.master_bedroom_nightlight"], HomeAction::Run),
+            ),
+            (
+                "turn off the bedroom",
+                home(&["light.master_bedroom"], HomeAction::Off),
+            ),
+            (
+                "make it brighter in the bedroom",
+                home(&["light.master_bedroom"], HomeAction::Brighter),
+            ),
+            ("skip this song", Some(VoiceCommand::Next)),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("ask.wav");
+        let gemini = Gemini::new(backend, std::env::var("GEMINI_MODEL").ok());
+        let mut wrong = 0;
+        for (said, want) in cases {
+            let status = std::process::Command::new("say")
+                .args([
+                    "-o",
+                    wav_path.to_str().unwrap(),
+                    "--data-format=LEI16@16000",
+                    said,
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let bytes = std::fs::read(&wav_path).unwrap();
+            let audio: Vec<f32> = bytes[44..]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                .collect();
+            let started = std::time::Instant::now();
+            let got = gemini.ask(&ctx, &audio).await.unwrap();
+            let ok = got == want;
+            wrong += usize::from(!ok);
+            println!(
+                "{said:?} -> {got:?} in {:?}{}",
+                started.elapsed(),
+                if ok { "" } else { "  WRONG" }
+            );
+        }
+        assert_eq!(wrong, 0);
     }
 }

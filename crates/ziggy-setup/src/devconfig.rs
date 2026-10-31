@@ -5,6 +5,8 @@ use toml::{Table, Value};
 pub const CONFIG_PATH: &str = "/etc/ziggy/config.toml";
 pub const STATE_DIR: &str = "/var/lib/ziggy";
 pub const VERTEX_KEY_PATH: &str = "/var/lib/ziggy/vertex-key.json";
+/// Where the player reads the Home Assistant token (its default in the player's config).
+pub const HA_TOKEN_PATH: &str = "/var/lib/ziggy/ha-token";
 /// The wake-word model, downloaded onto the device when voice is turned on.
 pub const WAKE_MODEL: &str = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
 
@@ -102,6 +104,7 @@ pub enum Setting {
     DimAfter,
     OffAfter,
     Audiobookshelf,
+    HomeAssistant,
     Voice,
     WakePhrase,
     WakeSensitivity,
@@ -110,12 +113,13 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 10] = [
+    pub const ALL: [Setting; 11] = [
         Setting::DeviceName,
         Setting::Volume,
         Setting::DimAfter,
         Setting::OffAfter,
         Setting::Audiobookshelf,
+        Setting::HomeAssistant,
         Setting::Voice,
         Setting::WakePhrase,
         Setting::WakeSensitivity,
@@ -130,6 +134,7 @@ impl Setting {
             Setting::DimAfter => "Dim the screen after",
             Setting::OffAfter => "Turn the screen off after",
             Setting::Audiobookshelf => "Audiobookshelf server",
+            Setting::HomeAssistant => "Home Assistant",
             Setting::Voice => "Voice control",
             Setting::WakePhrase => "Wake word",
             Setting::WakeSensitivity => "Wake word sensitivity",
@@ -149,6 +154,14 @@ impl Setting {
             Setting::DimAfter => minutes(n("dim_after_secs").unwrap_or(180)),
             Setting::OffAfter => minutes(n("off_after_secs").unwrap_or(600)),
             Setting::Audiobookshelf => s("audiobookshelf_url").unwrap_or_else(|| "off".into()),
+            Setting::HomeAssistant => match t.get("home_assistant").and_then(Value::as_table) {
+                None => "off".into(),
+                Some(ha) => {
+                    let pages = ha.get("page").and_then(Value::as_array).map_or(0, Vec::len);
+                    let url = ha.get("url").and_then(Value::as_str).unwrap_or_default();
+                    format!("{url} ({pages} page{})", if pages == 1 { "" } else { "s" })
+                }
+            },
             Setting::Voice if !voice_on => "off".into(),
             Setting::Voice if t.contains_key("vertex_key_file") => "on (Vertex AI)".into(),
             Setting::Voice => "on (Gemini API key)".into(),
@@ -176,7 +189,7 @@ impl Setting {
             Setting::WakeSensitivity => "wake_threshold",
             Setting::Microphone => "microphone",
             Setting::GeminiModel => "gemini_model",
-            Setting::Voice => return None,
+            Setting::Voice | Setting::HomeAssistant => return None,
         })
     }
 }
@@ -196,6 +209,27 @@ pub fn set_text(t: &mut Table, key: &str, value: &str) {
         t.remove(key);
     } else {
         t.insert(key.into(), value.into());
+    }
+}
+
+/// Sets the Home Assistant address, keeping any pages already written.
+pub fn set_home_assistant(t: &mut Table, url: &str) {
+    let ha = t
+        .entry("home_assistant")
+        .or_insert_with(|| Value::Table(Table::new()));
+    if let Some(ha) = ha.as_table_mut() {
+        ha.insert("url".into(), url.trim().trim_end_matches('/').into());
+    }
+}
+
+pub fn home_assistant_off(t: &mut Table) {
+    t.remove("home_assistant");
+}
+
+/// Its pages are written by hand, so a new setup keeps the old config's Home Assistant section.
+pub fn keep_home_assistant(t: &mut Table, old: Option<&Table>) {
+    if let Some(ha) = old.and_then(|o| o.get("home_assistant")) {
+        t.insert("home_assistant".into(), ha.clone());
     }
 }
 
@@ -219,6 +253,15 @@ pub fn check(t: &Table) -> anyhow::Result<()> {
         anyhow::ensure!(
             (0.0..=1.0).contains(&v),
             "wake word sensitivity must be 0-1"
+        );
+    }
+    // Pages are written by hand on the Pi; the player checks those itself.
+    if let Some(ha) = t.get("home_assistant") {
+        let url = ha.get("url").and_then(Value::as_str).unwrap_or_default();
+        anyhow::ensure!(
+            url.strip_prefix("http://")
+                .is_some_and(|host| !host.trim_matches('/').is_empty()),
+            "Home Assistant needs its local http:// address, like http://192.168.1.69:8123"
         );
     }
     Ok(())
@@ -286,5 +329,67 @@ mod tests {
         t.insert("dim_after_secs".into(), Value::Integer(60));
         t.insert("device_name".into(), "  ".into());
         assert!(check(&t).is_err());
+    }
+
+    #[test]
+    fn home_assistant_url_is_set_and_shown_without_touching_pages() {
+        let mut t: Table = toml::from_str(
+            "device_name = \"Leo\"\n[home_assistant]\nurl = \"http://old:8123\"\n[[home_assistant.page]]\nname = \"Room\"\ncontrols = [\"light.desk\"]\n",
+        )
+        .unwrap();
+        assert_eq!(Setting::HomeAssistant.show(&t), "http://old:8123 (1 page)");
+        set_home_assistant(&mut t, "http://192.168.1.69:8123/ ");
+        assert_eq!(
+            t["home_assistant"]["url"].as_str(),
+            Some("http://192.168.1.69:8123")
+        );
+        assert_eq!(
+            t["home_assistant"]["page"].as_array().map(Vec::len),
+            Some(1)
+        );
+        home_assistant_off(&mut t);
+        assert!(!t.contains_key("home_assistant"));
+        assert_eq!(Setting::HomeAssistant.show(&t), "off");
+    }
+
+    #[test]
+    fn home_assistant_must_be_http_with_a_host() {
+        let mut t: Table = toml::from_str("device_name = \"Leo\"\n").unwrap();
+        set_home_assistant(&mut t, "https://ha.example.com");
+        assert!(check(&t).is_err());
+        set_home_assistant(&mut t, "http://");
+        assert!(check(&t).is_err());
+        set_home_assistant(&mut t, "http://ha.local:8123");
+        check(&t).unwrap();
+    }
+
+    #[test]
+    fn setup_again_keeps_home_assistant() {
+        let mut old = new_config(&choices());
+        set_home_assistant(&mut old, "http://ha.local:8123");
+        let mut t = new_config(&choices());
+        keep_home_assistant(&mut t, Some(&old));
+        assert_eq!(t["home_assistant"], old["home_assistant"]);
+        let mut fresh = new_config(&choices());
+        keep_home_assistant(&mut fresh, None);
+        assert!(!fresh.contains_key("home_assistant"));
+    }
+
+    /// Pages written by hand, named controls included, survive `ziggy config` and still load.
+    #[test]
+    fn a_config_with_home_assistant_is_one_the_player_accepts() {
+        let mut t = parse(&format!(
+            "{}[[home_assistant.page]]\nname = \"Hall\"\n\
+             controls = [\"light.ceiling\", {{ entity = \"light.desk\", name = \"Desk lamp\" }}]\n",
+            render(&new_config(&choices()))
+        ))
+        .unwrap();
+        set_home_assistant(&mut t, "http://192.168.1.69:8123");
+        check(&t).unwrap();
+        let config = ziggy_player::config::Config::parse(&render(&t))
+            .expect("the player accepts the config");
+        let ha = config.home_assistant.unwrap();
+        assert_eq!(ha.url, "http://192.168.1.69:8123");
+        assert_eq!(ha.pages[0].controls[1].name(), Some("Desk lamp"));
     }
 }

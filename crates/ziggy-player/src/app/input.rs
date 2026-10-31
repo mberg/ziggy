@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::app::state::DisplayMode;
 use crate::model::{
     Account, Collection, EditOutcome, PlaylistEdit, Repeat, SearchResults, Section, Track,
@@ -23,6 +25,7 @@ pub enum Input {
     /// Sonos rooms found on the network.
     SonosRooms(Vec<crate::settings::SonosRoom>),
     Books(BooksUpdate),
+    Home(HomeUpdate),
     Voice(VoiceUpdate),
     /// The CPU temperature in whole °C; None when this computer doesn't report one.
     Temperature(Option<i32>),
@@ -80,6 +83,37 @@ pub enum BooksUpdate {
     SignedOut,
 }
 
+/// What the Home Assistant service reports.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HomeUpdate {
+    Connected,
+    Disconnected,
+    /// Home Assistant refused the token.
+    Refused,
+    /// No token was copied to this device.
+    NoToken,
+    States(Vec<(String, crate::home::types::EntityState)>),
+    Removed(Vec<String>),
+    /// Area names by entity ID.
+    Areas(HashMap<String, String>),
+    CallFailed {
+        entity_id: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HomeRequest {
+    /// `<domain>.<service>` on one entity, e.g. `turn_on` with a brightness.
+    Call {
+        entity_id: String,
+        service: &'static str,
+        brightness_pct: Option<u8>,
+    },
+    /// Try now instead of waiting out the retry delay (the Wi-Fi came back).
+    Reconnect,
+}
+
 /// What the voice service tells the core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoiceUpdate {
@@ -123,6 +157,24 @@ pub enum VoiceCommand {
         uri: String,
         heard: String,
     },
+    /// Home controls from the list Gemini was given, by entity ID.
+    Home {
+        ids: Vec<String>,
+        action: HomeAction,
+    },
+}
+
+/// What a voice request does to Home controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeAction {
+    On,
+    Off,
+    /// A light's brightness, 0-100; 0 turns it off.
+    Brightness(u8),
+    Brighter,
+    Dimmer,
+    /// Run a scene or script.
+    Run,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +194,20 @@ pub struct VoiceContext {
     pub volume: u8,
     /// Playlists, albums and artists in the library.
     pub items: Vec<VoiceItem>,
+    /// This player's Home controls; empty without Home Assistant.
+    pub home: Vec<VoiceHomeControl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceHomeControl {
+    pub entity_id: String,
+    /// "light", "light group of 2", "switch", "fan", "scene" or "script".
+    pub kind: String,
+    pub name: String,
+    /// Its Home Assistant area, else the page it's on.
+    pub room: String,
+    /// "on at 70%", "off", "unavailable"; empty for scenes and scripts.
+    pub now: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -302,6 +368,19 @@ pub enum UiAction {
     ChooseSonos(String),
     UseJack,
     ForgetSpeaker,
+    /// Home: show the page at this index.
+    HomePage(usize),
+    /// Home: the main part of a tile, by entity ID.
+    HomeTile(String),
+    /// Home: a light's brightness strip.
+    HomeStrip(String),
+    HomeScene(String),
+    /// Home: the brightness bar is being dragged, 1-100.
+    HomeBrightness(u8),
+    /// Home: the finger left the brightness bar at this level.
+    HomeBrightnessDone(u8),
+    HomeBarToggle,
+    HomeBarClose,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -408,6 +487,7 @@ pub enum Effect {
     /// Look for Sonos rooms on the network.
     ScanSonos,
     Books(BooksRequest),
+    Home(HomeRequest),
     /// What the voice service passes to Gemini with the next request.
     VoiceContext(VoiceContext),
     /// Start listening without the wake word.

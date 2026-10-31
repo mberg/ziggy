@@ -10,10 +10,12 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::{AppState, DisplayMode, Input, UiAction};
 use crate::model::Section;
-use crate::view::{self, LoadStatus, RowKind, ScreenView, SearchRowView, TileView, TrackRowView};
+use crate::view::{
+    self, HomeIcon, LoadStatus, RowKind, ScreenView, SearchRowView, TileView, TrackRowView,
+};
 use crate::{
-    AppWindow, ChapterData, LoadState, ScreenKind, SearchRowData, SpeakerRowData, Theme, TileData,
-    TrackData,
+    AppWindow, ChapterData, HomeSceneData, HomeTileData, LoadState, ScreenKind, SearchRowData,
+    SpeakerRowData, Theme, TileData, TrackData,
 };
 
 /// Covers kept in memory, besides those on screen. At 160 px each is about 100 KB.
@@ -84,6 +86,9 @@ struct Bridge {
     picker_playlists: Rc<VecModel<TileData>>,
     recent_songs: Rc<VecModel<TileData>>,
     books_rows: Rc<VecModel<SearchRowData>>,
+    home_pages: Rc<VecModel<slint::SharedString>>,
+    home_tiles: Rc<VecModel<HomeTileData>>,
+    home_scenes: Rc<VecModel<HomeSceneData>>,
     last: Option<AppState>,
 }
 
@@ -107,6 +112,12 @@ pub fn install(window: &AppWindow, image_requests: UnboundedSender<String>) {
     window.set_artist_albums(ModelRc::from(artist_albums.clone()));
     let books_rows = Rc::new(VecModel::<SearchRowData>::default());
     window.set_books_rows(ModelRc::from(books_rows.clone()));
+    let home_pages = Rc::new(VecModel::<slint::SharedString>::default());
+    window.set_home_pages(ModelRc::from(home_pages.clone()));
+    let home_tiles = Rc::new(VecModel::<HomeTileData>::default());
+    window.set_home_tiles(ModelRc::from(home_tiles.clone()));
+    let home_scenes = Rc::new(VecModel::<HomeSceneData>::default());
+    window.set_home_scenes(ModelRc::from(home_scenes.clone()));
     let recent_songs = Rc::new(VecModel::<TileData>::default());
     window.set_recent_song_rows(ModelRc::from(recent_songs.clone()));
     let picker_playlists = Rc::new(VecModel::<TileData>::default());
@@ -127,6 +138,9 @@ pub fn install(window: &AppWindow, image_requests: UnboundedSender<String>) {
         picker_playlists,
         recent_songs,
         books_rows,
+        home_pages,
+        home_tiles,
+        home_scenes,
         last: None,
     };
     BRIDGE.with(|cell| *cell.borrow_mut() = Some(bridge));
@@ -269,6 +283,22 @@ pub fn wire_callbacks(window: &AppWindow, inputs: UnboundedSender<Input>) {
     let s = send.clone();
     window.on_open_book(move |id| s(UiAction::OpenBook(id.to_string())));
     let s = send.clone();
+    window.on_home_pick_page(move |i| s(UiAction::HomePage(i.max(0) as usize)));
+    let s = send.clone();
+    window.on_home_tap_tile(move |id| s(UiAction::HomeTile(id.to_string())));
+    let s = send.clone();
+    window.on_home_tap_strip(move |id| s(UiAction::HomeStrip(id.to_string())));
+    let s = send.clone();
+    window.on_home_run_scene(move |id| s(UiAction::HomeScene(id.to_string())));
+    let s = send.clone();
+    window.on_home_bar_drag(move |l| s(UiAction::HomeBrightness(l.clamp(1, 100) as u8)));
+    let s = send.clone();
+    window.on_home_bar_release(move |l| s(UiAction::HomeBrightnessDone(l.clamp(1, 100) as u8)));
+    let s = send.clone();
+    window.on_home_bar_toggle(move || s(UiAction::HomeBarToggle));
+    let s = send.clone();
+    window.on_home_bar_close(move || s(UiAction::HomeBarClose));
+    let s = send.clone();
     window.on_set_books_enabled(move |b| s(UiAction::SetBooksEnabled(b)));
     let s = send.clone();
     window.on_edit_books_server(move || s(UiAction::EditBooksServer));
@@ -351,6 +381,7 @@ impl Bridge {
             ScreenView::Settings => ScreenKind::Settings,
             ScreenView::Books => ScreenKind::Books,
             ScreenView::Book => ScreenKind::Book,
+            ScreenView::Home => ScreenKind::Home,
         });
         w.set_section(v.section.index());
         w.set_grid_title(v.grid_title.as_str().into());
@@ -418,6 +449,37 @@ impl Bridge {
         w.set_books_query(v.books.query.as_str().into());
         w.set_books_state(load_state(v.books.status));
         w.set_books_message(v.books.message.as_str().into());
+        w.set_home_enabled(v.home_enabled);
+        w.set_home_page(v.home.page as i32);
+        w.set_home_banner(v.home.banner.as_str().into());
+        sync(
+            &self.home_pages,
+            v.home.pages.iter().map(|p| p.as_str().into()).collect(),
+        );
+        sync(
+            &self.home_tiles,
+            v.home.tiles.iter().map(home_tile_data).collect(),
+        );
+        sync(
+            &self.home_scenes,
+            v.home
+                .scenes
+                .iter()
+                .map(|sc| HomeSceneData {
+                    id: sc.id.as_str().into(),
+                    name: sc.name.as_str().into(),
+                    ran: sc.ran,
+                    enabled: sc.enabled,
+                })
+                .collect(),
+        );
+        w.set_home_bar_visible(v.home.bar.is_some());
+        if let Some(bar) = &v.home.bar {
+            w.set_home_bar_name(bar.name.as_str().into());
+            w.set_home_bar_level_text(bar.level_text.as_str().into());
+            w.set_home_bar_level(i32::from(bar.level));
+            w.set_home_bar_on(bar.on);
+        }
         if v.screen == ScreenView::Books {
             let rows = v
                 .books
@@ -636,6 +698,26 @@ fn load_state(status: LoadStatus) -> LoadState {
         LoadStatus::Forbidden => LoadState::Forbidden,
         LoadStatus::Limited => LoadState::Limited,
         LoadStatus::Ready => LoadState::Ready,
+    }
+}
+
+fn home_tile_data(t: &view::HomeTileView) -> HomeTileData {
+    HomeTileData {
+        id: t.id.as_str().into(),
+        name: t.name.as_str().into(),
+        line: t.line.as_str().into(),
+        icon: match t.icon {
+            HomeIcon::Light => 0,
+            HomeIcon::Plug => 1,
+            HomeIcon::Fan => 2,
+            HomeIcon::Group => 3,
+        },
+        on: t.on,
+        split: t.split,
+        strip: t.strip.as_str().into(),
+        level: i32::from(t.level),
+        selected: t.selected,
+        enabled: t.enabled,
     }
 }
 

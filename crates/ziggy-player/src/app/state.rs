@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::model::{Account, Collection, Repeat, SearchResults, Section, Track};
@@ -15,6 +15,8 @@ pub enum Screen {
     Books,
     /// A book's page, by Audiobookshelf item id.
     Book(String),
+    /// The Home Assistant controls.
+    Home,
 }
 
 /// Library data plus its loading status. Data stays visible while a refresh runs.
@@ -140,6 +142,8 @@ pub enum Notice {
     Created(String),
     /// What a voice request did, or why it didn't.
     Voice(String),
+    /// Home Assistant refused a change; the tile has been put back.
+    Home(String),
 }
 
 /// Where a voice request is.
@@ -218,6 +222,59 @@ pub struct BooksState {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HomeLink {
+    #[default]
+    Connecting,
+    Connected,
+    Unreachable,
+    /// Home Assistant refused the token.
+    Refused,
+    /// No token was copied to this device.
+    NoToken,
+}
+
+/// Home Assistant controls; on when there are pages.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HomeState {
+    pub pages: Vec<crate::home::types::Page>,
+    pub page: usize,
+    pub link: HomeLink,
+    pub entities: HashMap<String, crate::home::types::EntityState>,
+    /// Entities Home Assistant said it doesn't have.
+    pub missing: HashSet<String>,
+    /// Area names by entity ID, as far as Home Assistant told us.
+    pub areas: HashMap<String, String>,
+    /// The light whose brightness the bottom bar shows.
+    pub selected: Option<String>,
+    /// When the bar goes back to the music.
+    pub bar_until_ms: u64,
+    /// A scene just run, outlined until this time.
+    pub ran: Option<(String, u64)>,
+}
+
+impl HomeState {
+    pub fn enabled(&self) -> bool {
+        !self.pages.is_empty()
+    }
+
+    /// Home Assistant's name for an entity, or one made from its ID until it has given one.
+    pub fn ha_name(&self, entity_id: &str) -> String {
+        self.entities
+            .get(entity_id)
+            .and_then(|s| s.name.clone())
+            .unwrap_or_else(|| crate::home::types::tidy_id(entity_id))
+    }
+
+    /// The name a control shows: the config's, else Home Assistant's.
+    pub fn name_of(&self, control: &crate::home::types::Control) -> String {
+        control
+            .name
+            .clone()
+            .unwrap_or_else(|| self.ha_name(&control.entity_id))
+    }
+}
+
 /// What the on-screen text field is for, apart from search.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextPurpose {
@@ -290,6 +347,7 @@ pub struct AppState {
     pub list_view: bool,
     pub device: DeviceSettings,
     pub books: BooksState,
+    pub home: HomeState,
     pub voice: VoiceState,
     /// Artists opened from a song, so their page has a name before it loads elsewhere.
     pub artists_seen: HashMap<String, Collection>,

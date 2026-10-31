@@ -7,7 +7,9 @@ use i_slint_backend_testing::ElementHandle;
 use slint::ComponentHandle;
 use slint::LogicalPosition;
 use slint::platform::{PointerEventButton, WindowEvent};
-use ziggy_player::{AppWindow, ScreenKind, TileData};
+use ziggy_player::app::{Input, UiAction};
+use ziggy_player::model::Section;
+use ziggy_player::{AppWindow, HomeTileData, ScreenKind, TileData};
 
 fn visible_by_label(window: &AppWindow, label: &str) -> ElementHandle {
     let found: Vec<ElementHandle> =
@@ -226,6 +228,148 @@ fn ui_clicks() {
             .await;
         assert!(created.get(), "the plus on Playlists starts a new playlist");
         window.set_can_create_playlist(false);
+
+        // Home: tiles send their taps through the bridge, and the brightness bar replaces
+        // the music bar.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ziggy_player::ui_bridge::wire_callbacks(&window, tx);
+        let mut next_action = move || match rx.try_recv() {
+            Ok(Input::Ui(action)) => Some(action),
+            _ => None,
+        };
+        window.set_home_enabled(true);
+        window.set_screen(ScreenKind::Home);
+        window.set_home_pages(slint::ModelRc::new(slint::VecModel::from(vec![
+            slint::SharedString::from("Bedroom"),
+            slint::SharedString::from("Downstairs"),
+        ])));
+        window.set_home_tiles(slint::ModelRc::new(slint::VecModel::from(vec![
+            HomeTileData {
+                id: "light.desk".into(),
+                name: "Desk lamp".into(),
+                split: true,
+                strip: "Off".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            HomeTileData {
+                id: "light.bay".into(),
+                name: "Bay window".into(),
+                on: true,
+                split: true,
+                strip: "70%".into(),
+                level: 70,
+                enabled: true,
+                ..Default::default()
+            },
+            HomeTileData {
+                id: "light.porch".into(),
+                name: "Porch".into(),
+                line: "Unavailable".into(),
+                split: true,
+                strip: "Off".into(),
+                enabled: false,
+                ..Default::default()
+            },
+        ])));
+        slint::platform::update_timers_and_animations();
+        visible_by_label(&window, "Home")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(
+            next_action(),
+            Some(UiAction::ShowSection(Section::Home)),
+            "the rail shows Home when it's set up"
+        );
+        visible_by_label(&window, "Downstairs")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomePage(1)));
+        visible_by_label(&window, "Desk lamp")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomeTile("light.desk".into())));
+        visible_by_label(&window, "Porch")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), None, "a greyed tile does nothing");
+        visible_by_label(&window, "70%")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomeStrip("light.bay".into())));
+        window.set_mini_visible(true);
+        window.set_track_title("Mini song".into());
+        slint::platform::update_timers_and_animations();
+        visible_by_label(&window, "Mini song");
+        window.set_home_bar_visible(true);
+        window.set_home_bar_name("Bay window".into());
+        window.set_home_bar_level_text("70%".into());
+        window.set_home_bar_level(70);
+        window.set_home_bar_on(true);
+        slint::platform::update_timers_and_animations();
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Mini song")
+                .next()
+                .is_none(),
+            "the brightness bar takes the music bar's place"
+        );
+        visible_by_label(&window, "Turn off");
+        // A tap on the slider is a drag that ends at once: the release always follows.
+        visible_by_label(&window, "Brightness")
+            .single_click(PointerEventButton::Left)
+            .await;
+        let sent: Vec<UiAction> = std::iter::from_fn(&mut next_action).collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [UiAction::HomeBrightness(a), UiAction::HomeBrightnessDone(b)]
+                    if (45..=55).contains(a) && a == b
+            ),
+            "{sent:?}"
+        );
+        // A drag sends each level once, however often the finger moves within it.
+        let track = visible_by_label(&window, "Brightness");
+        let (at, size) = (track.absolute_position(), track.size());
+        let point = |fraction: f32| {
+            LogicalPosition::new(at.x + size.width * fraction, at.y + size.height / 2.0)
+        };
+        let button = PointerEventButton::Left;
+        let w = window.window();
+        w.dispatch_event(WindowEvent::PointerPressed {
+            position: point(0.2),
+            button,
+        });
+        for fraction in [0.2, 0.2, 0.2, 0.6, 0.6] {
+            w.dispatch_event(WindowEvent::PointerMoved {
+                position: point(fraction),
+            });
+        }
+        w.dispatch_event(WindowEvent::PointerReleased {
+            position: point(0.6),
+            button,
+        });
+        let sent: Vec<UiAction> = std::iter::from_fn(&mut next_action).collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [
+                    UiAction::HomeBrightness(a),
+                    UiAction::HomeBrightness(b),
+                    UiAction::HomeBrightnessDone(c),
+                ] if (15..=25).contains(a) && (55..=65).contains(b) && b == c
+            ),
+            "{sent:?}"
+        );
+        visible_by_label(&window, "Back to the music")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), Some(UiAction::HomeBarClose));
+        window.set_home_bar_visible(false);
+        slint::platform::update_timers_and_animations();
+        visible_by_label(&window, "Mini song");
+        window.set_mini_visible(false);
+        window.set_track_title("".into());
+        window.set_home_enabled(false);
 
         // Keyboard: Shift makes the next letter uppercase, then turns itself off.
         window.set_keyboard_open(true);

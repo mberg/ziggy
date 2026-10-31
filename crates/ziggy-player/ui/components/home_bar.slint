@@ -1,0 +1,112 @@
+import { Theme } from "../theme.slint";
+import { IconButton } from "icon_button.slint";
+
+// A light's brightness, in the music bar's place.
+export component HomeBar inherits Rectangle {
+    in property <string> name;
+    in property <string> level-text;
+    // 0-100; 0 while off.
+    in property <int> level;
+    in property <bool> on;
+    callback dragging(int);
+    // Always sent when the finger lifts, so the core knows the drag is over.
+    callback released(int);
+    callback toggle();
+    callback close();
+    height: Theme.mini-height;
+    background: Theme.surface;
+    function level-at(x: length, width: length) -> int {
+        return Math.clamp(Math.round(x / width * 100), 1, 100);
+    }
+    HorizontalLayout {
+        padding: 10px;
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            width: 110px;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.name;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 800;
+                overflow: elide;
+            }
+            Text {
+                text: root.level-text;
+                color: Theme.accent;
+                font-size: Theme.font-small;
+            }
+        }
+        track := Rectangle {
+            horizontal-stretch: 1;
+            height: 60px;
+            border-radius: 16px;
+            clip: true;
+            background: Theme.surface-hi;
+            accessible-role: slider;
+            accessible-label: "Brightness";
+            accessible-value: root.level-text;
+            Rectangle {
+                x: 0;
+                width: track.width * root.level / 100;
+                border-top-left-radius: 16px;
+                border-bottom-left-radius: 16px;
+                background: Theme.accent;
+            }
+            Image {
+                x: track.width - 42px;
+                source: @image-url("../icons/sun.svg");
+                width: 26px;
+                image-fit: contain;
+                colorize: Theme.text;
+            }
+            TouchArea {
+                // The level last sent, so a drag sends each level once.
+                property <int> last;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        self.last = root.level-at(self.mouse-x, self.width);
+                        root.dragging(self.last);
+                    } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        root.released(root.level-at(self.mouse-x, self.width));
+                    }
+                }
+                moved => {
+                    let level = root.level-at(self.mouse-x, self.width);
+                    if level != self.last {
+                        self.last = level;
+                        root.dragging(level);
+                    }
+                }
+            }
+        }
+        Rectangle {
+            width: 76px;
+            height: 56px;
+            border-radius: Theme.radius;
+            background: switch.pressed ? Theme.key : Theme.surface-hi;
+            accessible-role: button;
+            accessible-label: root.on ? "Turn off" : "Turn on";
+            accessible-action-default => { root.toggle(); }
+            Text {
+                text: root.on ? "Off" : "On";
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 800;
+            }
+            switch := TouchArea {
+                clicked => { root.toggle(); }
+            }
+        }
+        IconButton {
+            size: 52px;
+            icon: @image-url("../icons/close.svg");
+            accessible-role: button;
+            accessible-label: "Back to the music";
+            clicked => { root.close(); }
+        }
+    }
+}

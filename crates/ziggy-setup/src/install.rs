@@ -98,6 +98,9 @@ pub struct Secrets<'a> {
     /// The Spotify Soloist API key file.
     pub soloist_key: Option<&'a Path>,
     pub vertex_key: Option<&'a Path>,
+    /// A Home Assistant long-lived access token, straight from the prompt; it's never saved on
+    /// this computer.
+    pub ha_token: Option<&'a str>,
 }
 
 /// Where the player reads the Soloist API key (its default in the player's config).
@@ -124,6 +127,29 @@ pub fn install_secrets(r: &dyn Remote, secrets: &Secrets) -> anyhow::Result<()> 
         let bytes = std::fs::read(key).with_context(|| format!("reading {}", key.display()))?;
         r.upload(&bytes, VERTEX_KEY_PATH, "600", Some("ziggy-player"))?;
     }
+    if let Some(token) = secrets.ha_token {
+        r.upload(
+            token.as_bytes(),
+            devconfig::HA_TOKEN_PATH,
+            "600",
+            Some("ziggy-player"),
+        )?;
+    }
+    Ok(())
+}
+
+/// True when the player already has a Home Assistant token. The token itself stays on the Pi.
+pub fn has_ha_token(r: &dyn Remote) -> bool {
+    r.run(&format!(
+        "sudo test -s {} && echo yes || true",
+        devconfig::HA_TOKEN_PATH
+    ))
+    .is_ok_and(|out| out.trim() == "yes")
+}
+
+/// Deletes the player's Home Assistant token, once Home Assistant is turned off.
+pub fn remove_ha_token(r: &dyn Remote) -> anyhow::Result<()> {
+    r.run(&format!("sudo rm -f {}", devconfig::HA_TOKEN_PATH))?;
     Ok(())
 }
 
@@ -507,13 +533,16 @@ mod tests {
                 spotify_dir: dir.path(),
                 soloist_key: Some(&soloist),
                 vertex_key: Some(&key),
+                ha_token: Some("eyJ"),
             },
         )
         .unwrap();
+        assert_eq!(r.file("/var/lib/ziggy/ha-token").as_deref(), Some("eyJ"));
         for path in [
             "/var/lib/ziggy/soloist-api-key",
             "/var/lib/ziggy/web-auth.json",
             "/var/lib/ziggy/vertex-key.json",
+            "/var/lib/ziggy/ha-token",
         ] {
             let files = r.files.borrow();
             let (_, mode, owner) = &files[path];
@@ -523,6 +552,26 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn the_home_assistant_token_is_checked_and_removed_on_the_pi() {
+        let r = FakeRemote::default();
+        assert!(!has_ha_token(&r));
+        assert!(
+            r.all_scripts()
+                .contains("sudo test -s /var/lib/ziggy/ha-token")
+        );
+        let r = FakeRemote {
+            output: "yes\n".into(),
+            ..Default::default()
+        };
+        assert!(has_ha_token(&r));
+        remove_ha_token(&r).unwrap();
+        assert!(
+            r.all_scripts()
+                .contains("sudo rm -f /var/lib/ziggy/ha-token")
+        );
     }
 
     #[test]

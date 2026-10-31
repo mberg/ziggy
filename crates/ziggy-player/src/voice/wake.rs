@@ -346,6 +346,7 @@ mod end_to_end {
                 name: "Road Trip".into(),
                 by: "sam".into(),
             }],
+            ..VoiceContext::default()
         };
         let cases = [
             ("ziggy next song", Some(VoiceCommand::Next)),
