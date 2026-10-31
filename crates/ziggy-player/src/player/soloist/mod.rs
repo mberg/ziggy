@@ -333,11 +333,17 @@ async fn serve(
 /// stream of volumes, and late echoes would pull it back.
 const VOLUME_ECHO: Duration = Duration::from_millis(1500);
 
-/// After a song arrives without its name, Soloist is asked for it again after these waits.
-const DETAILS_RETRIES: [Duration; 3] = [
+/// After a song arrives without its name, Soloist is asked for it again after these waits: soon
+/// at first, since asking is cheap and the screen is blank meanwhile, then less often.
+const DETAILS_RETRIES: [Duration; 8] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_millis(750),
+    Duration::from_secs(1),
     Duration::from_secs(1),
     Duration::from_secs(2),
-    Duration::from_secs(3),
+    Duration::from_secs(2),
 ];
 
 /// What the engine remembers between frames.
@@ -910,8 +916,16 @@ mod tests {
             s.forward(&song(""), t0),
             "the song still reaches the screen"
         );
-        let asks: Vec<u64> = (0..12).filter(|&n| s.details_due(secs(n))).collect();
-        assert_eq!(asks, [1, 3, 6], "three tries, further apart");
+        let ms = |n| t0 + Duration::from_millis(n);
+        let asks: Vec<u64> = (0..12_000)
+            .step_by(50)
+            .filter(|&n| s.details_due(ms(n)))
+            .collect();
+        assert_eq!(
+            asks,
+            [250, 750, 1250, 2000, 3000, 4000, 6000, 8000],
+            "soon at first, then further apart"
+        );
         // Its name arriving stops the asking.
         s.forward(&song(""), secs(20));
         s.forward(&song("Song"), secs(20));
