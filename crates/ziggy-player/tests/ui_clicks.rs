@@ -371,6 +371,25 @@ fn ui_clicks() {
         window.set_track_title("".into());
         window.set_home_enabled(false);
 
+        // Now Playing: a long title stops at two lines, so the volume row stays on screen.
+        window.set_screen(ScreenKind::NowPlaying);
+        window.set_track_title(
+            "Free Fallin' - Live at the Nokia Theatre, Los Angeles, CA - December 2007"
+                .repeat(4)
+                .into(),
+        );
+        window.set_track_artists("John Mayer".into());
+        slint::platform::update_timers_and_animations();
+        let sleep = visible_by_label(&window, "Sleep timer");
+        let bottom = sleep.absolute_position().y + sleep.size().height;
+        assert!(
+            bottom <= 480.0,
+            "the volume row should be on screen, ends at y={bottom}"
+        );
+        window.set_track_title("".into());
+        window.set_track_artists("".into());
+        window.set_screen(ScreenKind::Grid);
+
         // Keyboard: Shift makes the next letter uppercase, then turns itself off.
         window.set_keyboard_open(true);
         let typed = Rc::new(std::cell::RefCell::new(String::new()));
