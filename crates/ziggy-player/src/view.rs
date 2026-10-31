@@ -180,6 +180,30 @@ fn tidy_id(entity_id: &str) -> String {
         .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
 }
 
+/// A scene's name without the room it's in: "Mud room Dimmed" on the "Mud room" page → "Dimmed".
+/// The first room that starts the name, followed by a space, is taken off; a name that is only
+/// the room stays whole.
+fn without_room(name: &str, rooms: &[&str]) -> String {
+    for room in rooms.iter().map(|r| r.trim()).filter(|r| !r.is_empty()) {
+        let end = name
+            .char_indices()
+            .nth(room.chars().count())
+            .map_or(name.len(), |(i, _)| i);
+        let (head, rest) = name.split_at(end);
+        if head.to_lowercase() != room.to_lowercase() || !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim();
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(c) if c.is_lowercase() => return c.to_uppercase().chain(chars).collect(),
+            Some(_) => return rest.to_string(),
+            None => {}
+        }
+    }
+    name.to_string()
+}
+
 fn home(state: &AppState) -> HomeView {
     use crate::app::HomeLink;
     use crate::home::types::Domain;
@@ -188,11 +212,19 @@ fn home(state: &AppState) -> HomeView {
         return HomeView::default();
     };
     let connected = h.link == HomeLink::Connected;
-    let name_of = |c: &crate::home::types::Control| {
-        c.name
-            .clone()
-            .or_else(|| h.entities.get(&c.entity_id).and_then(|s| s.name.clone()))
+    let ha_name = |c: &crate::home::types::Control| {
+        h.entities
+            .get(&c.entity_id)
+            .and_then(|s| s.name.clone())
             .unwrap_or_else(|| tidy_id(&c.entity_id))
+    };
+    let name_of = |c: &crate::home::types::Control| c.name.clone().unwrap_or_else(|| ha_name(c));
+    // The page already says which room it is, so scene buttons leave it out.
+    let scene_name = |c: &crate::home::types::Control| {
+        c.name.clone().unwrap_or_else(|| {
+            let area = h.areas.get(&c.entity_id).map_or("", String::as_str);
+            without_room(&ha_name(c), &[&page.name, area])
+        })
     };
     let rooms: std::collections::HashSet<&String> = page
         .tiles
@@ -254,7 +286,7 @@ fn home(state: &AppState) -> HomeView {
         .iter()
         .map(|c| HomeSceneView {
             id: c.entity_id.clone(),
-            name: name_of(c),
+            name: scene_name(c),
             ran: h.ran.as_ref().is_some_and(|(id, _)| id == &c.entity_id),
             enabled: connected
                 && !h.missing.contains(&c.entity_id)
@@ -1993,6 +2025,94 @@ mod tests {
             let v = build(core.state());
             assert!(v.home.scenes[0].enabled);
             assert!(!v.home.scenes[1].enabled);
+        }
+
+        #[test]
+        fn without_room_takes_off_the_room() {
+            let bed = ["Master bedroom"];
+            assert_eq!(
+                without_room("Master Bedroom Nightlight", &bed),
+                "Nightlight"
+            );
+            assert_eq!(
+                without_room("Master Bedroom Matt Reading", &bed),
+                "Matt Reading"
+            );
+            assert_eq!(
+                without_room("Master Bedroom Leigh reading", &bed),
+                "Leigh reading"
+            );
+            assert_eq!(without_room("Mud room Dimmed", &["Mud room"]), "Dimmed");
+            assert_eq!(without_room("MUD ROOM dimmed", &["mud room"]), "Dimmed");
+            assert_eq!(without_room("Élan salon Soir", &["élan SALON"]), "Soir");
+        }
+
+        #[test]
+        fn without_room_keeps_names_it_cannot_shorten() {
+            assert_eq!(without_room("Mud room", &["Mud room"]), "Mud room");
+            assert_eq!(without_room("Mud room  ", &["Mud room"]), "Mud room  ");
+            assert_eq!(without_room("Mudroom Bright", &["Mud"]), "Mudroom Bright");
+            assert_eq!(
+                without_room("Mudroom Bright", &["Mud room"]),
+                "Mudroom Bright"
+            );
+            assert_eq!(without_room("Bedtime", &["Kitchen"]), "Bedtime");
+            assert_eq!(without_room("Bedtime", &["", "  "]), "Bedtime");
+        }
+
+        #[test]
+        fn without_room_falls_back_to_the_area() {
+            let rooms = ["Upstairs", "Mud room"];
+            assert_eq!(without_room("Mud room Dimmed", &rooms), "Dimmed");
+            assert_eq!(without_room("Upstairs All off", &rooms), "All off");
+        }
+
+        #[test]
+        fn scene_buttons_leave_out_the_room() {
+            let mut pages = page(
+                &["light.lamp"],
+                &[
+                    "scene.nightlight",
+                    "scene.reading",
+                    "scene.dimmed",
+                    "scene.named",
+                ],
+            );
+            pages[0].name = "Master bedroom".into();
+            pages[0].scenes[3].name = Some("Master Bedroom Glow".into());
+            let mut core = core_with(pages);
+            states(
+                &mut core,
+                &[
+                    ("light.lamp", "Master Bedroom Lamp", "on", None),
+                    ("scene.nightlight", "Master Bedroom Nightlight", "", None),
+                    ("scene.reading", "Master Bedroom Leigh reading", "", None),
+                    ("scene.dimmed", "Mud room Dimmed", "", None),
+                    ("scene.named", "Master Bedroom Ignored", "", None),
+                ],
+            );
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [("scene.dimmed".to_string(), "Mud room".to_string())].into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            let names: Vec<&str> = v.home.scenes.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "Nightlight",
+                    "Leigh reading",
+                    "Dimmed",
+                    "Master Bedroom Glow"
+                ],
+                "a name from the config is kept as is"
+            );
+            assert_eq!(
+                v.home.tiles[0].name, "Master Bedroom Lamp",
+                "tiles keep the whole name"
+            );
         }
 
         #[test]
