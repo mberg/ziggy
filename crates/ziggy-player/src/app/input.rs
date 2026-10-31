@@ -90,6 +90,8 @@ pub enum HomeUpdate {
     Disconnected,
     /// Home Assistant refused the token.
     Refused,
+    /// No token was copied to this device.
+    NoToken,
     States(Vec<(String, crate::home::types::EntityState)>),
     Removed(Vec<String>),
     /// Area names by entity ID.

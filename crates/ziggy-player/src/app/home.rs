@@ -26,10 +26,12 @@ impl Core {
                 }
             }
             HomeUpdate::Refused => home.link = HomeLink::Refused,
+            HomeUpdate::NoToken => home.link = HomeLink::NoToken,
             HomeUpdate::States(states) => {
                 for (id, mut state) in states {
                     // Home Assistant's word is final, so the tap needs no undoing.
                     self.home_undo.remove(&id);
+                    home.missing.remove(&id);
                     let selected = home.selected.as_deref() == Some(id.as_str());
                     if selected && !state.available() {
                         home.selected = None;
@@ -46,6 +48,7 @@ impl Core {
                 for id in ids {
                     self.home_undo.remove(&id);
                     home.entities.remove(&id);
+                    home.missing.insert(id);
                 }
             }
             HomeUpdate::Areas(areas) => home.areas = areas,
@@ -615,6 +618,27 @@ mod tests {
             1_200,
         );
         assert!(c.state().home.entities["switch.fan"].is_on());
+    }
+
+    #[test]
+    fn removed_entities_are_missing_until_a_state_arrives() {
+        let mut c = home();
+        c.handle(
+            Input::Home(HomeUpdate::Removed(vec!["light.desk".into()])),
+            0,
+        );
+        assert!(c.state().home.missing.contains("light.desk"));
+        set(&mut c, "light.desk", "on", None);
+        assert!(c.state().home.missing.is_empty());
+    }
+
+    #[test]
+    fn no_token_blocks_taps() {
+        let mut c = home();
+        set(&mut c, "switch.fan", "off", None);
+        c.handle(Input::Home(HomeUpdate::NoToken), 1_000);
+        assert_eq!(c.state().home.link, HomeLink::NoToken);
+        assert!(home_fx(&c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_100)).is_empty());
     }
 
     #[test]

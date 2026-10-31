@@ -113,48 +113,49 @@ async fn run(
         cache.clone(),
         inputs.clone(),
     );
-    // Home Assistant: on when the config lists pages, or a pretend house in `--fake`.
-    let home_pages = match &config.home_assistant {
-        Some(ha) => crate::home::types::pages(ha),
-        None if fake => crate::home::service::fake_pages(),
-        None => Vec::new(),
-    };
-    let home = if home_pages.is_empty() {
-        None
-    } else if fake && config.home_assistant.is_none() {
-        Some(crate::home::service::spawn_home(
-            crate::home::service::Backend::Fake,
-            Vec::new(),
-            inputs.clone(),
-        ))
-    } else {
-        let token_file = config.home_token_file().expect("set with home_assistant");
-        match std::fs::read_to_string(&token_file) {
-            Ok(token) => {
-                let ids = home_pages
-                    .iter()
-                    .flat_map(|p| p.tiles.iter().chain(&p.scenes))
-                    .map(|c| c.entity_id.clone())
-                    .collect();
-                Some(crate::home::service::spawn_home(
-                    crate::home::service::Backend::Real {
-                        url: config.home_assistant.as_ref().expect("checked").url.clone(),
-                        token: token.trim().to_string(),
-                    },
-                    ids,
-                    inputs.clone(),
-                ))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "no Home Assistant token at {} ({e}); run `ziggy config`",
-                    token_file.display()
-                );
-                // Queued, so the core sees it once it starts.
-                let _ = inputs.send(Input::Home(crate::app::HomeUpdate::Refused));
-                None
-            }
+    // Home Assistant: on when the config lists pages. `--fake` always uses a pretend house.
+    let (home_pages, home) = match (fake, &config.home_assistant, config.home_token_file()) {
+        (true, _, _) => (
+            crate::home::service::fake_pages(),
+            Some(crate::home::service::spawn_home(
+                crate::home::service::Backend::Fake,
+                Vec::new(),
+                inputs.clone(),
+            )),
+        ),
+        (false, Some(ha), Some(token_file)) => {
+            let pages = crate::home::types::pages(ha);
+            let token = (!pages.is_empty()).then(|| std::fs::read_to_string(&token_file));
+            let home = match token {
+                None => None,
+                Some(Ok(token)) => {
+                    let ids = pages
+                        .iter()
+                        .flat_map(|p| p.tiles.iter().chain(&p.scenes))
+                        .map(|c| c.entity_id.clone())
+                        .collect();
+                    Some(crate::home::service::spawn_home(
+                        crate::home::service::Backend::Real {
+                            url: ha.url.clone(),
+                            token: token.trim().to_string(),
+                        },
+                        ids,
+                        inputs.clone(),
+                    ))
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(
+                        "no Home Assistant token at {} ({e}); run `ziggy config`",
+                        token_file.display()
+                    );
+                    // Queued, so the core sees it once it starts.
+                    let _ = inputs.send(Input::Home(crate::app::HomeUpdate::NoToken));
+                    None
+                }
+            };
+            (pages, home)
         }
+        _ => (Vec::new(), None),
     };
     let sonos_room = match &saved.output {
         Some(crate::settings::Output::Sonos(room)) => Some(room.clone()),

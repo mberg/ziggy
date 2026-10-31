@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::model::{Account, Collection, Repeat, SearchResults, Section, Track};
@@ -230,6 +230,8 @@ pub enum HomeLink {
     Unreachable,
     /// Home Assistant refused the token.
     Refused,
+    /// No token was copied to this device.
+    NoToken,
 }
 
 /// Home Assistant controls; on when there are pages.
@@ -239,6 +241,8 @@ pub struct HomeState {
     pub page: usize,
     pub link: HomeLink,
     pub entities: HashMap<String, crate::home::types::EntityState>,
+    /// Entities Home Assistant said it doesn't have.
+    pub missing: HashSet<String>,
     /// Area names by entity ID, as far as Home Assistant told us.
     pub areas: HashMap<String, String>,
     /// The light whose brightness the bottom bar shows.
