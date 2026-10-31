@@ -5,7 +5,7 @@ A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotif
 - **Spotify:** your library, search, playlist editing and hearting songs, with recently played kept on the player.
 - **Speakers:** the headphone jack, a Bluetooth speaker, or a Sonos room.
 - **Audiobooks:** browse an [Audiobookshelf](https://www.audiobookshelf.org/) server at home.
-- **Voice control:** say "ziggy, play Road Trip" or "ziggy, heart this". Voice is optional and needs a USB microphone.
+- **Voice control:** say "ziggy, play Road Trip", "ziggy, heart this" or, with Home Assistant, "ziggy, turn off the lights". Voice is optional and needs a USB microphone.
 - **Bedtime:** a sleep timer that fades the music out, and a screen that dims and turns itself off.
 
 ## What you need
@@ -133,6 +133,8 @@ A player can switch and dim Home Assistant lights, turn switches and fans on and
    A control is an entity ID, as shown in Home Assistant under Settings → Devices & services → Entities. To show a different name on its tile, write `{ entity = "…", name = "…" }`. Lights, switches and fans become tiles. Scenes and scripts become buttons along the bottom. Then restart the player with `sudo systemctl restart ziggy-player`. Running `ziggy config` later rewrites this file, so comments you add are dropped; your pages are kept.
 
 Home stays hidden until the config has at least one page. `ziggy config` and `ziggy setup` keep the pages you've written. The only Home Assistant data the Pi stores is the token; the states of lights and switches come live from Home Assistant.
+
+With voice control on, the same controls answer to voice: "ziggy, turn off the mud room", "ziggy, dim MR to 30", "ziggy, bedroom nightlight". Voice reaches only the controls on that player's pages.
 
 ## Troubleshooting
 

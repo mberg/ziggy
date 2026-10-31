@@ -171,18 +171,6 @@ pub struct HomeBarView {
     pub on: bool,
 }
 
-/// A name for an entity before Home Assistant has given one: "light.bay_window" → "Bay window".
-fn tidy_id(entity_id: &str) -> String {
-    let words = entity_id
-        .split_once('.')
-        .map_or(entity_id, |(_, id)| id)
-        .replace('_', " ");
-    let mut chars = words.chars();
-    chars
-        .next()
-        .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
-}
-
 /// A scene's name without the room it's in: "Mud room Dimmed" on the "Mud room" page → "Dimmed".
 /// The first room that starts the name, followed by a space, is taken off; a name that is only
 /// the room stays whole.
@@ -215,13 +203,8 @@ fn home(state: &AppState) -> HomeView {
         return HomeView::default();
     };
     let connected = h.link == HomeLink::Connected;
-    let ha_name = |c: &crate::home::types::Control| {
-        h.entities
-            .get(&c.entity_id)
-            .and_then(|s| s.name.clone())
-            .unwrap_or_else(|| tidy_id(&c.entity_id))
-    };
-    let name_of = |c: &crate::home::types::Control| c.name.clone().unwrap_or_else(|| ha_name(c));
+    let ha_name = |c: &crate::home::types::Control| h.ha_name(&c.entity_id);
+    let name_of = |c: &crate::home::types::Control| h.name_of(c);
     // The page already says which room it is, so scene buttons leave it out.
     let scene_name = |c: &crate::home::types::Control| {
         c.name.clone().unwrap_or_else(|| {
@@ -1907,7 +1890,10 @@ mod tests {
                 v.home.scenes[0].name, "Bedtime",
                 "before Home Assistant answers, a tidied ID"
             );
-            assert_eq!(tidy_id("light.bay_window"), "Bay window");
+            assert_eq!(
+                crate::home::types::tidy_id("light.bay_window"),
+                "Bay window"
+            );
         }
 
         #[test]

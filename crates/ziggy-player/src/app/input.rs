@@ -157,6 +157,24 @@ pub enum VoiceCommand {
         uri: String,
         heard: String,
     },
+    /// Home controls from the list Gemini was given, by entity ID.
+    Home {
+        ids: Vec<String>,
+        action: HomeAction,
+    },
+}
+
+/// What a voice request does to Home controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeAction {
+    On,
+    Off,
+    /// A light's brightness, 0-100; 0 turns it off.
+    Brightness(u8),
+    Brighter,
+    Dimmer,
+    /// Run a scene or script.
+    Run,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +194,20 @@ pub struct VoiceContext {
     pub volume: u8,
     /// Playlists, albums and artists in the library.
     pub items: Vec<VoiceItem>,
+    /// This player's Home controls; empty without Home Assistant.
+    pub home: Vec<VoiceHomeControl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceHomeControl {
+    pub entity_id: String,
+    /// "light", "light group of 2", "switch", "fan", "scene" or "script".
+    pub kind: String,
+    pub name: String,
+    /// Its Home Assistant area, else the page it's on.
+    pub room: String,
+    /// "on at 70%", "off", "unavailable"; empty for scenes and scripts.
+    pub now: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

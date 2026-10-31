@@ -212,6 +212,7 @@ impl Core {
                 self.state.picker = Some(track.uri);
                 self.on_ui(UiAction::PickPlaylist(playlist_uri), now_ms, fx);
             }
+            VoiceCommand::Home { ids, action } => self.voice_home(ids, action, now_ms, fx),
             VoiceCommand::Louder | VoiceCommand::Quieter | VoiceCommand::SetVolume(_) => {}
         }
     }
@@ -323,6 +324,7 @@ impl Core {
             playing: pb.status == PlayStatus::Playing,
             volume: self.state.voice.ducked_from.unwrap_or(pb.volume),
             items,
+            home: self.home_voice_controls(),
         }
     }
 }

@@ -49,6 +49,18 @@ impl Domain {
     }
 }
 
+/// A name for an entity before Home Assistant has given one: "light.bay_window" → "Bay window".
+pub fn tidy_id(entity_id: &str) -> String {
+    let words = entity_id
+        .split_once('.')
+        .map_or(entity_id, |(_, id)| id)
+        .replace('_', " ");
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+}
+
 /// One control on a page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Control {

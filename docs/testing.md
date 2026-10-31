@@ -197,6 +197,11 @@ Check:
 - [ ] A control named in the config (`{ entity = "light.desk", name = "Desk lamp" }`) shows that name.
 - [ ] An entity that isn't in Home Assistant shows a grey "Not in Home Assistant" tile.
 - [ ] Stop Home Assistant: a "Can't reach Home Assistant" banner appears and the tiles grey out. Start it again: the player reconnects by itself.
+- [ ] With voice on, "ziggy, turn off" a room's light group, then "ziggy, turn it on" by name: the tile changes at once and a note says what was done ("Turned off Mud room").
+- [ ] "ziggy, dim" a light "to 30 percent", then "ziggy, brighter": the strip shows 30%, then 50%.
+- [ ] "ziggy," a scene's name ("bedroom nightlight"): the scene runs and its button is outlined.
+- [ ] "ziggy, turn on the kitchen", a light on no page of this player: "Didn't catch that", and nothing changes.
+- [ ] With Home Assistant stopped, a voice request for a light says "Can't reach Home Assistant".
 - [ ] A wrong token shows "Home Assistant refused Ziggy's sign-in".
 - [ ] A player without `[home_assistant]` in its config shows no Home item.
 

@@ -9,6 +9,10 @@ const BAR_MS: u64 = 8_000;
 const DRAG_SEND_MS: u64 = 250;
 /// How long a scene button stays outlined after a tap.
 const RAN_MS: u64 = 4_000;
+/// A step for "brighter" and "dimmer", in percent.
+const BRIGHTNESS_STEP: u8 = 20;
+/// A voice note names at most this many controls, then says how many more.
+const NAMED_MOST: usize = 3;
 
 impl Core {
     pub(super) fn on_home(&mut self, update: HomeUpdate, now_ms: u64) {
@@ -194,6 +198,152 @@ impl Core {
         }
     }
 
+    /// This player's controls, for Gemini: each once, in page order.
+    pub(super) fn home_voice_controls(&self) -> Vec<VoiceHomeControl> {
+        let home = &self.state.home;
+        let mut out: Vec<VoiceHomeControl> = Vec::new();
+        for page in &home.pages {
+            for c in page.tiles.iter().chain(&page.scenes) {
+                if out.iter().any(|o| o.entity_id == c.entity_id) {
+                    continue;
+                }
+                let state = home.entities.get(&c.entity_id);
+                let kind = match c.domain {
+                    Domain::Light => match state.map_or(0, |s| s.members) {
+                        0 => "light".to_string(),
+                        n => format!("light group of {n}"),
+                    },
+                    Domain::Switch => "switch".into(),
+                    Domain::Fan => "fan".into(),
+                    Domain::Scene => "scene".into(),
+                    Domain::Script => "script".into(),
+                };
+                let now = match state {
+                    _ if !c.domain.is_tile() => String::new(),
+                    None => "unknown".into(),
+                    Some(s) if !s.available() => "unavailable".into(),
+                    Some(s) => match (s.is_on(), s.percent()) {
+                        (true, Some(pct)) => format!("on at {pct}%"),
+                        (true, None) => "on".into(),
+                        (false, _) => "off".into(),
+                    },
+                };
+                out.push(VoiceHomeControl {
+                    entity_id: c.entity_id.clone(),
+                    kind,
+                    name: home.name_of(c),
+                    room: home
+                        .areas
+                        .get(&c.entity_id)
+                        .cloned()
+                        .unwrap_or_else(|| page.name.clone()),
+                    now,
+                });
+            }
+        }
+        out
+    }
+
+    /// A voice request for Home controls, run as taps would be.
+    pub(super) fn voice_home(
+        &mut self,
+        ids: Vec<String>,
+        action: HomeAction,
+        now_ms: u64,
+        fx: &mut Vec<Effect>,
+    ) {
+        // Only this player's own controls, whatever Gemini named.
+        let mut controls: Vec<crate::home::types::Control> = Vec::new();
+        for id in ids {
+            let control = self
+                .state
+                .home
+                .pages
+                .iter()
+                .flat_map(|p| p.tiles.iter().chain(&p.scenes))
+                .find(|c| c.entity_id == id);
+            if let Some(c) = control
+                && !controls.iter().any(|k| k.entity_id == c.entity_id)
+            {
+                controls.push(c.clone());
+            }
+        }
+        if controls.is_empty() {
+            self.notify(Notice::Voice("Didn't catch that".into()), now_ms);
+            return;
+        }
+        if self.state.home.link != HomeLink::Connected {
+            self.notify(Notice::Voice("Can't reach Home Assistant".into()), now_ms);
+            return;
+        }
+        let mut done: Vec<(String, Option<u8>)> = Vec::new();
+        let mut unavailable: Vec<String> = Vec::new();
+        for c in &controls {
+            let id = c.entity_id.as_str();
+            let name = self.state.home.name_of(c);
+            let Some(state) = self.usable(id) else {
+                unavailable.push(name);
+                continue;
+            };
+            let light = c.domain == Domain::Light;
+            let pct = state.percent().filter(|_| state.is_on());
+            let call: Option<(&'static str, Option<u8>)> = match (action, c.domain.is_tile()) {
+                (HomeAction::On | HomeAction::Run, _) => Some(("turn_on", None)),
+                // A scene or script can only be run.
+                (_, false) => None,
+                (HomeAction::Off, true) | (HomeAction::Brightness(0), true) => {
+                    Some(("turn_off", None))
+                }
+                (HomeAction::Brightness(p), true) if light => Some(("turn_on", Some(p.min(100)))),
+                (HomeAction::Brightness(_), true) => Some(("turn_on", None)),
+                (HomeAction::Brighter, true) if light => Some((
+                    "turn_on",
+                    Some(pct.map_or(BRIGHTNESS_STEP, |p| {
+                        p.saturating_add(BRIGHTNESS_STEP).min(100)
+                    })),
+                )),
+                (HomeAction::Dimmer, true) if light => {
+                    // A light that's off stays off.
+                    pct.map(|p| ("turn_on", Some(p.saturating_sub(BRIGHTNESS_STEP).max(1))))
+                }
+                (HomeAction::Brighter | HomeAction::Dimmer, true) => None,
+            };
+            let Some((service, pct)) = call else {
+                continue;
+            };
+            if c.domain.is_tile() {
+                self.home_call(id, service, pct, fx);
+            } else {
+                self.on_home_ui(UiAction::HomeScene(id.to_string()), now_ms, fx);
+            }
+            done.push((name, pct));
+        }
+        let text = if done.is_empty() && !unavailable.is_empty() {
+            format!("{} unavailable", names(&unavailable))
+        } else if done.is_empty() {
+            "Didn't catch that".to_string()
+        } else {
+            let who: Vec<String> = done.iter().map(|(n, _)| n.clone()).collect();
+            let who = names(&who);
+            let level = done.first().and_then(|(_, p)| *p);
+            let same = done.iter().all(|(_, p)| *p == level);
+            match (action, level) {
+                (HomeAction::Off | HomeAction::Brightness(0), _) => format!("Turned off {who}"),
+                (
+                    HomeAction::Brightness(_) | HomeAction::Brighter | HomeAction::Dimmer,
+                    Some(p),
+                ) if same => {
+                    format!("{who} at {p}%")
+                }
+                (HomeAction::Brighter, _) => format!("Turned up {who}"),
+                (HomeAction::Dimmer, _) => format!("Turned down {who}"),
+                _ if controls.iter().all(|c| !c.domain.is_tile()) => format!("Ran {who}"),
+                _ => format!("Turned on {who}"),
+            }
+        };
+        self.notify(Notice::Voice(text), now_ms);
+    }
+
     /// Puts the music back in the bottom bar.
     pub(super) fn home_deselect(&mut self) {
         self.state.home.selected = None;
@@ -258,6 +408,23 @@ impl Core {
             (true, None) => state.brightness.or(Some(255)),
         };
         self.state.home.entities.insert(id.to_string(), state);
+    }
+}
+
+/// "MR", "MR and LR", "MR, LR and Lamp", "MR, LR, Lamp and 2 more".
+fn names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        _ if names.len() <= NAMED_MOST => {
+            let (last, rest) = names.split_last().expect("not empty");
+            format!("{} and {last}", rest.join(", "))
+        }
+        _ => format!(
+            "{} and {} more",
+            names[..NAMED_MOST].join(", "),
+            names.len() - NAMED_MOST
+        ),
     }
 }
 
@@ -752,6 +919,151 @@ mod tests {
         assert!(home_fx(&c.handle(ui(UiAction::HomeTile("switch.fan".into())), 1_100)).is_empty());
         assert!(
             home_fx(&c.handle(ui(UiAction::HomeScene("scene.bedtime".into())), 1_200)).is_empty()
+        );
+    }
+
+    fn say(c: &mut Core, ids: &[&str], action: HomeAction) -> Vec<Effect> {
+        let ids = ids.iter().map(|id| id.to_string()).collect();
+        c.handle(
+            Input::Voice(VoiceUpdate::Command(VoiceCommand::Home { ids, action })),
+            1_000,
+        )
+    }
+
+    fn said(c: &Core) -> Option<String> {
+        match &c.state().notice {
+            Some(Notice::Voice(text)) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn gemini_is_told_each_control_once_with_its_state() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(178));
+        set(&mut c, "switch.fan", "unavailable", None);
+        let controls = c.voice_context().home;
+        let rows: Vec<(&str, &str, &str, &str)> = controls
+            .iter()
+            .map(|h| {
+                (
+                    h.entity_id.as_str(),
+                    h.kind.as_str(),
+                    h.room.as_str(),
+                    h.now.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("light.desk", "light", "Room", "on at 70%"),
+                ("switch.fan", "switch", "Room", "unavailable"),
+                ("scene.bedtime", "scene", "Room", ""),
+            ]
+        );
+        assert_eq!(controls[0].name, "Desk");
+    }
+
+    #[test]
+    fn a_player_without_home_tells_gemini_of_none() {
+        let c = Core::new(config(), 0).0;
+        assert!(c.voice_context().home.is_empty());
+    }
+
+    #[test]
+    fn voice_switches_several_controls_at_once() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(178));
+        set(&mut c, "switch.fan", "on", None);
+        let fx = say(&mut c, &["light.desk", "switch.fan"], HomeAction::Off);
+        assert!(fx.contains(&call("light.desk", "turn_off", None)));
+        assert!(fx.contains(&call("switch.fan", "turn_off", None)));
+        assert!(
+            !c.state().home.entities["light.desk"].is_on(),
+            "shown at once"
+        );
+        assert_eq!(said(&c).as_deref(), Some("Turned off Desk and Fan"));
+    }
+
+    #[test]
+    fn voice_sets_and_steps_brightness() {
+        let mut c = home();
+        set(&mut c, "light.desk", "off", None);
+        let fx = say(&mut c, &["light.desk"], HomeAction::Brightness(40));
+        assert!(fx.contains(&call("light.desk", "turn_on", Some(40))));
+        assert_eq!(said(&c).as_deref(), Some("Desk at 40%"));
+        set(&mut c, "light.desk", "on", Some(brightness_of(90)));
+        let fx = say(&mut c, &["light.desk"], HomeAction::Brighter);
+        assert!(fx.contains(&call("light.desk", "turn_on", Some(100))));
+        let fx = say(&mut c, &["light.desk"], HomeAction::Dimmer);
+        assert!(
+            fx.contains(&call("light.desk", "turn_on", Some(80))),
+            "{fx:?}"
+        );
+        let fx = say(&mut c, &["light.desk"], HomeAction::Brightness(0));
+        assert!(fx.contains(&call("light.desk", "turn_off", None)));
+        assert_eq!(said(&c).as_deref(), Some("Turned off Desk"));
+    }
+
+    #[test]
+    fn dimmer_leaves_a_light_that_is_off_alone() {
+        let mut c = home();
+        set(&mut c, "light.desk", "off", None);
+        let fx = say(&mut c, &["light.desk"], HomeAction::Dimmer);
+        assert!(home_fx(&fx).is_empty());
+        assert_eq!(said(&c).as_deref(), Some("Didn't catch that"));
+    }
+
+    #[test]
+    fn voice_runs_scenes() {
+        let mut c = home();
+        set(&mut c, "scene.bedtime", "unknown", None);
+        let fx = say(&mut c, &["scene.bedtime"], HomeAction::Run);
+        assert!(fx.contains(&call("scene.bedtime", "turn_on", None)));
+        assert_eq!(said(&c).as_deref(), Some("Ran Bedtime"));
+        // Turning a scene off means nothing.
+        let fx = say(&mut c, &["scene.bedtime"], HomeAction::Off);
+        assert!(home_fx(&fx).is_empty());
+    }
+
+    #[test]
+    fn voice_never_touches_controls_the_player_doesnt_have() {
+        let mut c = home();
+        set(&mut c, "light.desk", "off", None);
+        let fx = say(
+            &mut c,
+            &["light.kitchen", "lock.front_door"],
+            HomeAction::On,
+        );
+        assert!(home_fx(&fx).is_empty());
+        assert_eq!(said(&c).as_deref(), Some("Didn't catch that"));
+        let fx = say(&mut c, &["light.kitchen", "light.desk"], HomeAction::On);
+        assert_eq!(home_fx(&fx), vec![&call("light.desk", "turn_on", None)]);
+    }
+
+    #[test]
+    fn voice_says_when_home_assistant_cant_be_reached() {
+        let mut c = home();
+        set(&mut c, "light.desk", "off", None);
+        c.handle(Input::Home(HomeUpdate::Disconnected), 0);
+        let fx = say(&mut c, &["light.desk"], HomeAction::On);
+        assert!(home_fx(&fx).is_empty());
+        assert_eq!(said(&c).as_deref(), Some("Can't reach Home Assistant"));
+        let mut c = home();
+        set(&mut c, "light.desk", "unavailable", None);
+        say(&mut c, &["light.desk"], HomeAction::On);
+        assert_eq!(said(&c).as_deref(), Some("Desk unavailable"));
+    }
+
+    #[test]
+    fn long_lists_of_names_are_cut_short() {
+        let n = |list: &[&str]| names(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(n(&["MR"]), "MR");
+        assert_eq!(n(&["MR", "LR", "Lamp"]), "MR, LR and Lamp");
+        assert_eq!(
+            n(&["MR", "LR", "Lamp", "Hall", "Porch"]),
+            "MR, LR, Lamp and 2 more"
         );
     }
 }

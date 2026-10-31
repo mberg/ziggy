@@ -257,6 +257,22 @@ impl HomeState {
     pub fn enabled(&self) -> bool {
         !self.pages.is_empty()
     }
+
+    /// Home Assistant's name for an entity, or one made from its ID until it has given one.
+    pub fn ha_name(&self, entity_id: &str) -> String {
+        self.entities
+            .get(entity_id)
+            .and_then(|s| s.name.clone())
+            .unwrap_or_else(|| crate::home::types::tidy_id(entity_id))
+    }
+
+    /// The name a control shows: the config's, else Home Assistant's.
+    pub fn name_of(&self, control: &crate::home::types::Control) -> String {
+        control
+            .name
+            .clone()
+            .unwrap_or_else(|| self.ha_name(&control.entity_id))
+    }
 }
 
 /// What the on-screen text field is for, apart from search.

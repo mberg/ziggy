@@ -26,7 +26,7 @@ Success means:
 | Connection | Home Assistant's WebSocket API, on the `tokio-tungstenite` Ziggy already uses for Soloist |
 | Sign-in | A long-lived access token of a non-admin "Ziggy" user in Home Assistant, one file per player |
 | Controls in v1 | Lights (on/off, brightness), switches and plugs, fans (on/off), scenes, scripts |
-| Voice | Later; not in v1 |
+| Voice | Added after v1: Gemini gets the player's controls and a `home_control` function; see Voice below |
 
 Found on the network on 2026-10-31: Home Assistant 2026.2.3 at `http://192.168.1.69:8123`
 (mDNS `_home-assistant._tcp`, name "Home"), reachable from both players.
@@ -133,6 +133,22 @@ home/
   player. `Section::Home` is added to the rail.
 - **`--fake`**: a fake Home Assistant with a few rooms, so the screen can be tried on the Mac.
 
+## Voice
+
+- With each request, Gemini is told this player's controls: ID, kind ("light group of 4"), name,
+  room (its area, else its page) and state ("on at 70%"). Players without Home get no Home list
+  and no `home_control` function.
+- `home_control(ids, action, percent)`. The action is on, off, brightness, brighter, dimmer or run.
+  Several IDs at once cover "turn everything off".
+- The core keeps only IDs on this player's pages, then runs each like a tap, so tiles change at
+  once:
+  - brightness 0 turns a light off;
+  - brighter and dimmer step 20%;
+  - dimmer leaves a light that's off alone;
+  - scenes are only run.
+- A voice note says what was done: "Turned off Mud room", "MR at 30%", "Ran Master bedroom
+  Nightlight". When Home Assistant can't be reached, it says "Can't reach Home Assistant".
+
 ## Testing
 
 - **Config**: pages, controls as strings and tables, the default token path, an unknown domain
@@ -153,7 +169,6 @@ home/
 
 ## Not in v1
 
-- Voice requests ("Ziggy, turn off the lamp").
 - Other domains: climate, covers, media players, locks.
 - Editing pages on the player.
 - Reading Home Assistant dashboards or labels.
