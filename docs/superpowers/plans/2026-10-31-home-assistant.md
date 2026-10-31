@@ -143,7 +143,7 @@ gives the parser tests real shapes to check against.
 
       #[test]
       fn brightness_converts_both_ways() {
-          let on = |b| EntityState { state: "on".into(), name: None, brightness: Some(b) };
+          let on = |b| EntityState { state: "on".into(), name: None, brightness: Some(b), color: None };
           assert_eq!(on(255).percent(), Some(100));
           assert_eq!(on(178).percent(), Some(70));
           assert_eq!(on(1).percent(), Some(1), "a lit light never reads 0%");
@@ -229,6 +229,9 @@ gives the parser tests real shapes to check against.
       pub name: Option<String>,
       /// 0-255, while a light is on.
       pub brightness: Option<u8>,
+      /// The bulb's colour (`rgb_color`), while a colour or white-tunable light is on.
+      #[serde(default)]
+      pub color: Option<[u8; 3]>,
   }
 
   impl EntityState {
@@ -289,20 +292,27 @@ removals. Ziggy keeps the merged form and hands the app core plain `EntityState`
       assert_eq!(changed.len(), 2);
       assert!(removed.is_empty());
       let desk = changed.iter().find(|(id, _)| id == "light.desk").unwrap();
-      assert_eq!(desk.1, EntityState { state: "on".into(), name: Some("Desk lamp".into()), brightness: Some(178) });
+      assert_eq!(desk.1, EntityState { state: "on".into(), name: Some("Desk lamp".into()), brightness: Some(178), color: None });
 
       // Turning off: the state changes and brightness is taken away.
       let (changed, _) = states.apply(&json!({"c": {
           "light.desk": {"+": {"s": "off"}, "-": {"a": ["brightness"]}}
       }}));
       assert_eq!(changed, vec![("light.desk".to_string(), EntityState {
-          state: "off".into(), name: Some("Desk lamp".into()), brightness: None })]);
+          state: "off".into(), name: Some("Desk lamp".into()), brightness: None, color: None })]);
 
       // Dimming changes only an attribute.
       let (changed, _) = states.apply(&json!({"c": {
           "light.desk": {"+": {"s": "on", "a": {"brightness": 26}}}
       }}));
       assert_eq!(changed[0].1.percent(), Some(10));
+  }
+
+  #[test]
+  fn a_bulbs_colour_is_kept() {
+      let mut states = States::default();
+      let (changed, _) = states.apply(&json!({"a": {"light.desk": {"s": "on", "a": {"rgb_color": [255, 180, 107]}}}}));
+      assert_eq!(changed[0].1.color, Some([255, 180, 107]));
   }
 
   #[test]
@@ -409,6 +419,10 @@ removals. Ziggy keeps the merged form and hands the app core plain `EntityState`
                   .get("brightness")
                   .and_then(Value::as_u64)
                   .map(|b| b.min(255) as u8),
+              color: attrs.get("rgb_color").and_then(Value::as_array).and_then(|c| {
+                  let c: Vec<u8> = c.iter().filter_map(Value::as_u64).map(|v| v.min(255) as u8).collect();
+                  <[u8; 3]>::try_from(c).ok()
+              }),
           })
       }
 
@@ -448,7 +462,7 @@ removals. Ziggy keeps the merged form and hands the app core plain `EntityState`
 - [ ] **Step 4: Run the tests**
 
   Run: `cargo test -p ziggy-player home::types`
-  Expected: 5 passed.
+  Expected: 6 passed.
 
 - [ ] **Step 5: Commit**
   ```bash
@@ -1005,7 +1019,7 @@ No behaviour yet; this makes the next task's tests compile.
 
       fn set(c: &mut Core, id: &str, state: &str, brightness: Option<u8>) {
           c.handle(Input::Home(HomeUpdate::States(vec![(id.into(), EntityState {
-              state: state.into(), name: None, brightness })])), 0);
+              state: state.into(), name: None, brightness, color: None })])), 0);
       }
 
       fn call(id: &str, service: &'static str, pct: Option<u8>) -> Effect {
@@ -1303,7 +1317,7 @@ No behaviour yet; this makes the next task's tests compile.
       fn home_show(&mut self, id: &str, on: bool, pct: Option<u8>) {
           let before = self.state.home.entities.get(id).cloned();
           self.home_undo.entry(id.to_string()).or_insert_with(|| before.clone());
-          let mut state = before.unwrap_or(EntityState { state: String::new(), name: None, brightness: None });
+          let mut state = before.unwrap_or(EntityState { state: String::new(), name: None, brightness: None, color: None });
           state.state = if on { "on" } else { "off" }.into();
           state.brightness = match (on, pct) {
               (false, _) => None,
@@ -1643,7 +1657,7 @@ No behaviour yet; this makes the next task's tests compile.
       let mut house: HashMap<String, EntityState> = names
           .iter()
           .map(|(id, name, _, state, b)| {
-              (id.to_string(), EntityState { state: state.to_string(), name: Some(name.to_string()), brightness: *b })
+              (id.to_string(), EntityState { state: state.to_string(), name: Some(name.to_string()), brightness: *b, color: None })
           })
           .collect();
       let areas = names.iter().map(|(id, _, area, _, _)| (id.to_string(), area.to_string())).collect();
@@ -1798,8 +1812,16 @@ No behaviour yet; this makes the next task's tests compile.
 
       fn states(core: &mut crate::app::Core, list: &[(&str, &str, &str, Option<u8>)]) {
           core.handle(Input::Home(HomeUpdate::States(list.iter().map(|(id, name, s, b)| {
-              (id.to_string(), EntityState { state: s.to_string(), name: Some(name.to_string()), brightness: *b })
+              (id.to_string(), EntityState { state: s.to_string(), name: Some(name.to_string()), brightness: *b, color: None })
           }).collect())), 0);
+      }
+
+      #[test]
+      fn a_dim_bulb_glows_darker_than_a_bright_one() {
+          let (bright, dark_text) = glow([255, 255, 255], 100);
+          assert_eq!((bright, dark_text), ([255, 255, 255], true));
+          let (dim, dark_text) = glow([255, 255, 255], 10);
+          assert!(dim[0] < 100 && !dark_text);
       }
 
       #[test]
@@ -1815,7 +1837,7 @@ No behaviour yet; this makes the next task's tests compile.
           assert_eq!(v.home.pages, vec!["Room".to_string()]);
           let desk = &v.home.tiles[0];
           assert_eq!((desk.name.as_str(), desk.on, desk.split, desk.strip.as_str(), desk.sun), ("Desk lamp", true, true, "70%", true));
-          assert_eq!(desk.level, 70, "the strip fills to the brightness");
+          assert_eq!(desk.glow, Some(glow(WARM_WHITE, 70).0), "a plain dimmable bulb glows warm white");
           assert_eq!(desk.line, "", "a one-room page doesn't repeat the room");
           let fan = &v.home.tiles[1];
           assert_eq!((fan.split, fan.line.as_str()), (false, "Off"));
@@ -1832,7 +1854,7 @@ No behaviour yet; this makes the next task's tests compile.
           let v = build(core.state());
           assert_eq!(v.home.tiles[0].line, "Outside");
           assert_eq!(v.home.tiles[0].strip, "Off");
-      assert_eq!(v.home.tiles[0].level, 0);
+      assert_eq!(v.home.tiles[0].glow, None, "an off light has no glow");
           core.handle(Input::Ui(UiAction::HomeStrip("light.desk".into())), 0);
           let bar = build(core.state()).home.bar.unwrap();
           assert_eq!((bar.name.as_str(), bar.level, bar.level_text.as_str(), bar.on), ("Desk", 100, "100%", true));
@@ -1884,8 +1906,10 @@ No behaviour yet; this makes the next task's tests compile.
       pub split: bool,
       /// "Off", or the brightness: "70%".
       pub strip: String,
-      /// How full the strip is, 0-100; 0 while off.
-      pub level: u8,
+      /// The strip's colour while on: the bulb's colour, darker as it dims.
+      pub glow: Option<[u8; 3]>,
+      /// The glow is pale, so the strip's icon and text are dark.
+      pub glow_dark_text: bool,
       pub sun: bool,
       pub selected: bool,
       pub enabled: bool,
@@ -1915,6 +1939,22 @@ No behaviour yet; this makes the next task's tests compile.
       pub on: bool,
   }
 
+  /// About 2700 K.
+  const WARM_WHITE: [u8; 3] = [255, 169, 87];
+  /// Ziggy's darkest background, which a dim bulb's colour fades toward.
+  const GLOW_BASE: [u8; 3] = [20, 18, 31];
+
+  /// A bulb's colour at a brightness, and whether it is pale enough to want dark text on it.
+  fn glow(rgb: [u8; 3], percent: u8) -> ([u8; 3], bool) {
+      let f = 0.25 + 0.75 * f32::from(percent.min(100)) / 100.0;
+      let c: [u8; 3] = std::array::from_fn(|i| {
+          let (base, v) = (f32::from(GLOW_BASE[i]), f32::from(rgb[i]));
+          (base + (v - base) * f).round() as u8
+      });
+      let light = (0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2])) / 255.0;
+      (c, light > 0.5)
+  }
+
   fn home(state: &AppState) -> HomeView {
       use crate::app::HomeLink;
       use crate::home::types::Domain;
@@ -1941,6 +1981,10 @@ No behaviour yet; this makes the next task's tests compile.
               let light = c.domain == Domain::Light;
               let room = if mixed { h.areas.get(&c.entity_id).cloned() } else { None };
               let words = if on { "On" } else { "Off" };
+              // Bulbs that only dim are drawn warm white.
+              let glow = state
+                  .filter(|_| on && light && connected)
+                  .map(|s| glow(s.color.unwrap_or(WARM_WHITE), s.percent().unwrap_or(100)));
               let (line, enabled) = match state {
                   None if connected => ("Not in Home Assistant".to_string(), false),
                   Some(s) if !s.available() => ("Unavailable".to_string(), false),
@@ -1963,11 +2007,8 @@ No behaviour yet; this makes the next task's tests compile.
                       _ if on => "On".into(),
                       _ => "Off".into(),
                   },
-                  level: match state.and_then(|s| s.percent()) {
-                      Some(pct) if on && enabled => pct,
-                      _ if on && enabled => 100,
-                      _ => 0,
-                  },
+                  glow: glow.map(|(rgb, _)| rgb),
+                  glow_dark_text: glow.is_some_and(|(_, dark)| dark),
                   sun: on && enabled,
                   selected: h.selected.as_deref() == Some(c.entity_id.as_str()),
                   enabled,
@@ -2053,8 +2094,9 @@ No behaviour yet; this makes the next task's tests compile.
       on: bool,
       split: bool,
       strip: string,
-      // How full the strip is, 0-100.
-      level: int,
+      // The strip while on: the bulb's colour at its brightness.
+      glow: color,
+      glow-dark-text: bool,
       sun: bool,
       selected: bool,
       enabled: bool,
@@ -2103,6 +2145,7 @@ No behaviour yet; this makes the next task's tests compile.
       callback tap();
       callback tap-strip();
       property <color> fg: root.data.on ? Theme.accent-text : Theme.text;
+      property <color> strip-fg: !root.data.on ? Theme.text : root.data.glow-dark-text ? Theme.accent-text : #ffffff;
       property <length> main-width: root.data.split ? root.width * 0.66 : root.width;
       border-radius: Theme.radius;
       background: root.data.on ? Theme.accent : Theme.surface;
@@ -2150,19 +2193,13 @@ No behaviour yet; this makes the next task's tests compile.
           width: root.width - root.main-width;
           border-top-right-radius: Theme.radius;
           border-bottom-right-radius: Theme.radius;
-          clip: true;
-          background: root.data.on ? #1b130024 : Theme.surface-hi;
-          // Fills from the bottom to the brightness.
-          Rectangle {
-              y: parent.height * (1 - root.data.level / 100);
-              height: parent.height * root.data.level / 100;
-              background: #ffffff66;
-          }
+          // The bulb's own colour at its brightness.
+          background: root.data.on ? root.data.glow : Theme.surface-hi;
           VerticalLayout {
               alignment: center;
               spacing: 6px;
-              if root.data.sun: Image { source: @image-url("../icons/sun.svg"); height: 26px; image-fit: contain; colorize: root.fg; }
-              Text { text: root.data.strip; horizontal-alignment: center; color: root.fg; font-size: Theme.font-small; font-weight: 800; }
+              if root.data.sun: Image { source: @image-url("../icons/sun.svg"); height: 26px; image-fit: contain; colorize: root.strip-fg; }
+              Text { text: root.data.strip; horizontal-alignment: center; color: root.strip-fg; font-size: Theme.font-small; font-weight: 800; }
           }
           TouchArea { clicked => { if root.data.enabled { root.tap-strip(); } } }
       }
@@ -2412,7 +2449,8 @@ No behaviour yet; this makes the next task's tests compile.
             on: t.on,
             split: t.split,
             strip: t.strip.as_str().into(),
-            level: i32::from(t.level),
+            glow: t.glow.map_or(slint::Color::from_rgb_u8(0, 0, 0), |[r, g, b]| slint::Color::from_rgb_u8(r, g, b)),
+            glow_dark_text: t.glow_dark_text,
             sun: t.sun,
             selected: t.selected,
             enabled: t.enabled,
