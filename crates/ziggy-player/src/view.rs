@@ -113,6 +113,188 @@ pub struct DetailView {
     pub artist_link: bool,
 }
 
+/// The Home screen: one page of Home Assistant controls.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HomeView {
+    pub pages: Vec<String>,
+    pub page: usize,
+    pub tiles: Vec<HomeTileView>,
+    pub scenes: Vec<HomeSceneView>,
+    /// Why the controls don't work right now; empty when they do.
+    pub banner: String,
+    /// The brightness bar, while a light is selected.
+    pub bar: Option<HomeBarView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeTileView {
+    pub id: String,
+    pub name: String,
+    /// Under the name: the room on a mixed page, the state of a switch, or why it can't be used.
+    pub line: String,
+    pub icon: HomeIcon,
+    pub on: bool,
+    /// Lights have a brightness strip on the right.
+    pub split: bool,
+    /// "Off", or the brightness: "70%".
+    pub strip: String,
+    /// How bright the strip is drawn, 0-100; 0 while off.
+    pub level: u8,
+    pub sun: bool,
+    pub selected: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeIcon {
+    Light,
+    Plug,
+    Fan,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeSceneView {
+    pub id: String,
+    pub name: String,
+    pub ran: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeBarView {
+    pub name: String,
+    /// 0-100; 0 while off.
+    pub level: u8,
+    pub level_text: String,
+    pub on: bool,
+}
+
+/// A name for an entity before Home Assistant has given one: "light.bay_window" → "Bay window".
+fn tidy_id(entity_id: &str) -> String {
+    let words = entity_id
+        .split_once('.')
+        .map_or(entity_id, |(_, id)| id)
+        .replace('_', " ");
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+}
+
+fn home(state: &AppState) -> HomeView {
+    use crate::app::HomeLink;
+    use crate::home::types::Domain;
+    let h = &state.home;
+    let Some(page) = h.pages.get(h.page) else {
+        return HomeView::default();
+    };
+    let connected = h.link == HomeLink::Connected;
+    let name_of = |c: &crate::home::types::Control| {
+        c.name
+            .clone()
+            .or_else(|| h.entities.get(&c.entity_id).and_then(|s| s.name.clone()))
+            .unwrap_or_else(|| tidy_id(&c.entity_id))
+    };
+    let rooms: std::collections::HashSet<&String> = page
+        .tiles
+        .iter()
+        .filter_map(|c| h.areas.get(&c.entity_id))
+        .collect();
+    let mixed = rooms.len() > 1;
+    let tiles = page
+        .tiles
+        .iter()
+        .map(|c| {
+            let state = h.entities.get(&c.entity_id);
+            let on = state.is_some_and(|s| s.is_on());
+            let light = c.domain == Domain::Light;
+            let room = if mixed {
+                h.areas.get(&c.entity_id).cloned()
+            } else {
+                None
+            };
+            let words = if on { "On" } else { "Off" };
+            let (line, enabled) = match state {
+                None if connected => ("Not in Home Assistant".to_string(), false),
+                Some(s) if !s.available() => ("Unavailable".to_string(), false),
+                _ if light => (room.unwrap_or_default(), connected),
+                _ => (
+                    room.map_or(words.to_string(), |r| format!("{r} · {words}")),
+                    connected,
+                ),
+            };
+            HomeTileView {
+                id: c.entity_id.clone(),
+                name: name_of(c),
+                line,
+                icon: match c.domain {
+                    Domain::Fan => HomeIcon::Fan,
+                    Domain::Switch => HomeIcon::Plug,
+                    _ => HomeIcon::Light,
+                },
+                on: on && enabled,
+                split: light,
+                strip: match state.and_then(|s| s.percent()) {
+                    Some(pct) if on => format!("{pct}%"),
+                    _ if on => "On".into(),
+                    _ => "Off".into(),
+                },
+                level: match state.and_then(|s| s.percent()) {
+                    Some(pct) if on && enabled => pct,
+                    _ if on && enabled => 100,
+                    _ => 0,
+                },
+                sun: on && enabled,
+                selected: h.selected.as_deref() == Some(c.entity_id.as_str()),
+                enabled,
+            }
+        })
+        .collect();
+    let scenes = page
+        .scenes
+        .iter()
+        .map(|c| HomeSceneView {
+            id: c.entity_id.clone(),
+            name: name_of(c),
+            ran: h.ran.as_ref().is_some_and(|(id, _)| id == &c.entity_id),
+            enabled: connected,
+        })
+        .collect();
+    let bar = h.selected.as_ref().and_then(|id| {
+        let s = h.entities.get(id)?;
+        let control = page.tiles.iter().find(|c| &c.entity_id == id)?;
+        let level = if s.is_on() {
+            s.percent().unwrap_or(100)
+        } else {
+            0
+        };
+        Some(HomeBarView {
+            name: name_of(control),
+            level,
+            level_text: if s.is_on() {
+                format!("{level}%")
+            } else {
+                "Off".into()
+            },
+            on: s.is_on(),
+        })
+    });
+    HomeView {
+        pages: h.pages.iter().map(|p| p.name.clone()).collect(),
+        page: h.page,
+        tiles,
+        scenes,
+        banner: match h.link {
+            HomeLink::Connected | HomeLink::Connecting => String::new(),
+            HomeLink::Unreachable => "Can't reach Home Assistant. Trying again…".into(),
+            HomeLink::Refused => {
+                "Home Assistant refused Ziggy's sign-in. Run `ziggy config`.".into()
+            }
+        },
+        bar,
+    }
+}
+
 /// The Books screen: Continue listening, then every book, filtered as you type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BooksView {
@@ -449,6 +631,9 @@ pub struct View {
     pub books_enabled: bool,
     pub books: BooksView,
     pub book: Option<BookView>,
+    /// The rail shows Home.
+    pub home_enabled: bool,
+    pub home: HomeView,
     /// Playlists shows a button to make a new, empty playlist.
     pub can_create_playlist: bool,
     /// Recent's chips (albums and playlists, or songs) show on its screen.
@@ -550,6 +735,8 @@ pub fn build(state: &AppState) -> View {
         books_enabled: state.books.enabled,
         books: books_view(state),
         book: book_view(state),
+        home_enabled: state.home.enabled(),
+        home: home(state),
         recent_chips: state.screen == Screen::Grid(Section::Recent),
         recent_songs: state.recent_songs,
         recent_song_rows: if state.recent_songs && state.screen == Screen::Grid(Section::Recent) {
@@ -1568,5 +1755,148 @@ mod tests {
         assert!(!build(c.state()).mini_visible);
         c.handle(ui(UiAction::CloseKeyboard), 5_000);
         assert!(build(c.state()).mini_visible);
+    }
+
+    mod home_view {
+        use super::*;
+        use crate::app::{HomeUpdate, Input, UiAction};
+        use crate::home::types::{Control, Domain, EntityState, Page};
+
+        fn c(id: &str) -> Control {
+            Control {
+                entity_id: id.into(),
+                domain: Domain::of(id).unwrap(),
+                name: None,
+            }
+        }
+
+        fn core_with(pages: Vec<Page>) -> crate::app::Core {
+            let mut cfg = crate::app::tests::config();
+            cfg.home = pages;
+            let mut core = crate::app::Core::new(cfg, 0).0;
+            core.handle(Input::Home(HomeUpdate::Connected), 0);
+            core.handle(Input::Ui(UiAction::ShowSection(Section::Home)), 0);
+            core
+        }
+
+        fn states(core: &mut crate::app::Core, list: &[(&str, &str, &str, Option<u8>)]) {
+            core.handle(
+                Input::Home(HomeUpdate::States(
+                    list.iter()
+                        .map(|(id, name, s, b)| {
+                            (
+                                id.to_string(),
+                                EntityState {
+                                    state: s.to_string(),
+                                    name: Some(name.to_string()),
+                                    brightness: *b,
+                                },
+                            )
+                        })
+                        .collect(),
+                )),
+                0,
+            );
+        }
+
+        #[test]
+        fn tiles_show_names_states_and_strips() {
+            let mut core = core_with(vec![Page {
+                name: "Room".into(),
+                tiles: vec![c("light.desk"), c("switch.fan"), c("light.gone")],
+                scenes: vec![c("scene.bedtime")],
+            }]);
+            states(
+                &mut core,
+                &[
+                    ("light.desk", "Desk lamp", "on", Some(178)),
+                    ("switch.fan", "Fan", "off", None),
+                ],
+            );
+            let v = build(core.state());
+            assert!(v.home_enabled);
+            assert_eq!(v.home.pages, vec!["Room".to_string()]);
+            let desk = &v.home.tiles[0];
+            assert_eq!(
+                (
+                    desk.name.as_str(),
+                    desk.on,
+                    desk.split,
+                    desk.strip.as_str(),
+                    desk.sun
+                ),
+                ("Desk lamp", true, true, "70%", true)
+            );
+            assert_eq!(desk.level, 70, "the strip is drawn as bright as the light");
+            assert_eq!(desk.line, "", "a one-room page doesn't repeat the room");
+            let fan = &v.home.tiles[1];
+            assert_eq!((fan.split, fan.line.as_str()), (false, "Off"));
+            let gone = &v.home.tiles[2];
+            assert_eq!(
+                (gone.enabled, gone.line.as_str()),
+                (false, "Not in Home Assistant")
+            );
+            assert_eq!(
+                v.home.scenes[0].name, "Bedtime",
+                "before Home Assistant answers, a tidied ID"
+            );
+            assert_eq!(tidy_id("light.bay_window"), "Bay window");
+        }
+
+        #[test]
+        fn mixed_pages_show_rooms_and_the_bar_shows_the_selected_light() {
+            let mut core = core_with(vec![Page {
+                name: "Everyday".into(),
+                tiles: vec![c("light.porch"), c("light.desk")],
+                scenes: vec![],
+            }]);
+            states(
+                &mut core,
+                &[
+                    ("light.porch", "Porch", "off", None),
+                    ("light.desk", "Desk", "on", Some(255)),
+                ],
+            );
+            core.handle(
+                Input::Home(HomeUpdate::Areas(
+                    [
+                        ("light.porch".to_string(), "Outside".to_string()),
+                        ("light.desk".to_string(), "Micah's room".to_string()),
+                    ]
+                    .into(),
+                )),
+                0,
+            );
+            let v = build(core.state());
+            assert_eq!(v.home.tiles[0].line, "Outside");
+            assert_eq!(v.home.tiles[0].strip, "Off");
+            assert_eq!(v.home.tiles[0].level, 0);
+            core.handle(Input::Ui(UiAction::HomeStrip("light.desk".into())), 0);
+            let bar = build(core.state()).home.bar.unwrap();
+            assert_eq!(
+                (
+                    bar.name.as_str(),
+                    bar.level,
+                    bar.level_text.as_str(),
+                    bar.on
+                ),
+                ("Desk", 100, "100%", true)
+            );
+        }
+
+        #[test]
+        fn unreachable_and_refused_say_so() {
+            let mut core = core_with(vec![Page {
+                name: "Room".into(),
+                tiles: vec![c("light.desk")],
+                scenes: vec![],
+            }]);
+            core.handle(Input::Home(HomeUpdate::Disconnected), 0);
+            let v = build(core.state());
+            assert_eq!(v.home.banner, "Can't reach Home Assistant. Trying again…");
+            assert!(!v.home.tiles[0].enabled);
+            core.handle(Input::Home(HomeUpdate::Refused), 0);
+            assert!(build(core.state()).home.banner.contains("ziggy config"));
+        }
     }
 }
