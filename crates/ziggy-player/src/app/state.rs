@@ -15,6 +15,8 @@ pub enum Screen {
     Books,
     /// A book's page, by Audiobookshelf item id.
     Book(String),
+    /// The Home Assistant controls.
+    Home,
 }
 
 /// Library data plus its loading status. Data stays visible while a refresh runs.
@@ -218,6 +220,39 @@ pub struct BooksState {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HomeLink {
+    #[default]
+    Connecting,
+    Connected,
+    Unreachable,
+    /// Home Assistant refused the token.
+    Refused,
+}
+
+/// Home Assistant controls; on when there are pages.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HomeState {
+    pub pages: Vec<crate::home::types::Page>,
+    pub page: usize,
+    pub link: HomeLink,
+    pub entities: HashMap<String, crate::home::types::EntityState>,
+    /// Area names by entity ID, as far as Home Assistant told us.
+    pub areas: HashMap<String, String>,
+    /// The light whose brightness the bottom bar shows.
+    pub selected: Option<String>,
+    /// When the bar goes back to the music.
+    pub bar_until_ms: u64,
+    /// A scene just run, outlined until this time.
+    pub ran: Option<(String, u64)>,
+}
+
+impl HomeState {
+    pub fn enabled(&self) -> bool {
+        !self.pages.is_empty()
+    }
+}
+
 /// What the on-screen text field is for, apart from search.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextPurpose {
@@ -290,6 +325,7 @@ pub struct AppState {
     pub list_view: bool,
     pub device: DeviceSettings,
     pub books: BooksState,
+    pub home: HomeState,
     pub voice: VoiceState,
     /// Artists opened from a song, so their page has a name before it loads elsewhere.
     pub artists_seen: HashMap<String, Collection>,

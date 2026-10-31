@@ -17,6 +17,7 @@ pub(crate) fn config() -> CoreConfig {
         books_user: None,
         books_config_url: None,
         voice: true,
+        home: Vec::new(),
     }
 }
 

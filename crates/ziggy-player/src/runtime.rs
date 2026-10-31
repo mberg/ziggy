@@ -191,6 +191,7 @@ async fn run(
         books_user,
         books_config_url: config.audiobookshelf_url.clone(),
         voice: config.voice_model_dir.is_some(),
+        home: Vec::new(),
     };
     let history =
         crate::history::spawn_history(config.state_dir.join("history.db"), inputs.clone());
@@ -290,6 +291,7 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             Effect::Books(request) => {
                 let _ = outputs.books.send(request);
             }
+            Effect::Home(_) => {}
             Effect::VoiceListen => {
                 outputs
                     .listen_now

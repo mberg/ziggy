@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::app::state::DisplayMode;
 use crate::model::{
     Account, Collection, EditOutcome, PlaylistEdit, Repeat, SearchResults, Section, Track,
@@ -23,6 +25,7 @@ pub enum Input {
     /// Sonos rooms found on the network.
     SonosRooms(Vec<crate::settings::SonosRoom>),
     Books(BooksUpdate),
+    Home(HomeUpdate),
     Voice(VoiceUpdate),
     /// The CPU temperature in whole °C; None when this computer doesn't report one.
     Temperature(Option<i32>),
@@ -78,6 +81,35 @@ pub enum BooksUpdate {
     },
     SignInFailed(String),
     SignedOut,
+}
+
+/// What the Home Assistant service reports.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HomeUpdate {
+    Connected,
+    Disconnected,
+    /// Home Assistant refused the token.
+    Refused,
+    States(Vec<(String, crate::home::types::EntityState)>),
+    Removed(Vec<String>),
+    /// Area names by entity ID.
+    Areas(HashMap<String, String>),
+    CallFailed {
+        entity_id: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HomeRequest {
+    /// `<domain>.<service>` on one entity, e.g. `turn_on` with a brightness.
+    Call {
+        entity_id: String,
+        service: &'static str,
+        brightness_pct: Option<u8>,
+    },
+    /// Try now instead of waiting out the retry delay (the Wi-Fi came back).
+    Reconnect,
 }
 
 /// What the voice service tells the core.
@@ -302,6 +334,19 @@ pub enum UiAction {
     ChooseSonos(String),
     UseJack,
     ForgetSpeaker,
+    /// Home: show the page at this index.
+    HomePage(usize),
+    /// Home: the main part of a tile, by entity ID.
+    HomeTile(String),
+    /// Home: a light's brightness strip.
+    HomeStrip(String),
+    HomeScene(String),
+    /// Home: the brightness bar is being dragged, 1-100.
+    HomeBrightness(u8),
+    /// Home: the finger left the brightness bar at this level.
+    HomeBrightnessDone(u8),
+    HomeBarToggle,
+    HomeBarClose,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -408,6 +453,7 @@ pub enum Effect {
     /// Look for Sonos rooms on the network.
     ScanSonos,
     Books(BooksRequest),
+    Home(HomeRequest),
     /// What the voice service passes to Gemini with the next request.
     VoiceContext(VoiceContext),
     /// Start listening without the wake word.

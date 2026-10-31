@@ -21,6 +21,7 @@ pub enum ScreenView {
     Settings,
     Books,
     Book,
+    Home,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +474,7 @@ pub fn build(state: &AppState) -> View {
         Screen::Settings => ScreenView::Settings,
         Screen::Books => ScreenView::Books,
         Screen::Book(_) => ScreenView::Book,
+        Screen::Home => ScreenView::Home,
     };
     let grid_section = match state.screen {
         Screen::Grid(section) => section,

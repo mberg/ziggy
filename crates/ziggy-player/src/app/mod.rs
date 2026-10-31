@@ -1,3 +1,4 @@
+mod home;
 pub mod input;
 pub mod state;
 #[cfg(test)]
@@ -70,6 +71,8 @@ pub struct CoreConfig {
     pub books_config_url: Option<String>,
     /// Voice control is set up, so the microphone button shows.
     pub voice: bool,
+    /// Home Assistant pages; none turns Home off.
+    pub home: Vec<crate::home::types::Page>,
 }
 
 impl CoreConfig {
@@ -119,6 +122,10 @@ pub struct Core {
     failed_tracks_ms: Vec<u64>,
     /// When the library was last asked again while offline.
     offline_retry_ms: u64,
+    /// Entity states from before an optimistic tap, until Home Assistant confirms or refuses it.
+    home_undo: HashMap<String, Option<crate::home::types::EntityState>>,
+    /// When a dragged brightness was last sent.
+    home_sent_ms: u64,
 }
 
 /// This many songs failing within `FAILED_TRACKS_WINDOW_MS` pauses playback.
@@ -193,6 +200,10 @@ impl Core {
                     ..Default::default()
                 }
             },
+            home: HomeState {
+                pages: cfg.home.clone(),
+                ..Default::default()
+            },
         };
         let mut core = Core {
             state,
@@ -211,6 +222,8 @@ impl Core {
             asked_spotify_recent: false,
             failed_tracks_ms: Vec::new(),
             offline_retry_ms: now_ms,
+            home_undo: HashMap::new(),
+            home_sent_ms: 0,
         };
         let mut fx = Vec::new();
         for section in [Section::Playlists, Section::Albums, Section::Recent] {
@@ -249,6 +262,7 @@ impl Core {
             }
             Input::Bluetooth(update) => self.on_bluetooth(update, &mut fx),
             Input::Books(update) => self.on_books(update, &mut fx),
+            Input::Home(update) => self.on_home(update, now_ms, &mut fx),
             Input::Voice(update) => self.on_voice(update, now_ms, &mut fx),
             Input::Temperature(c) => self.state.device.temperature_c = c,
             Input::Wifi(wifi) => self.on_wifi(wifi, now_ms, &mut fx),
@@ -273,6 +287,10 @@ impl Core {
         }
         if !matches!(self.state.screen, Screen::Search | Screen::Books) {
             self.state.keyboard_open = false;
+        }
+        // Leaving Home puts the music back in the bottom bar.
+        if self.state.screen != Screen::Home {
+            self.state.home.selected = None;
         }
         // Edit mode belongs to the playlist on screen; leaving it ends editing.
         if let Some(uri) = &self.state.editing
@@ -1041,6 +1059,19 @@ impl Core {
                 self.state.screen = Screen::Books;
                 self.load_books(fx);
             }
+            UiAction::ShowSection(Section::Home) => {
+                self.state.section = Section::Home;
+                self.state.back_stack.clear();
+                self.state.screen = Screen::Home;
+            }
+            UiAction::HomePage(_)
+            | UiAction::HomeTile(_)
+            | UiAction::HomeStrip(_)
+            | UiAction::HomeScene(_)
+            | UiAction::HomeBrightness(_)
+            | UiAction::HomeBrightnessDone(_)
+            | UiAction::HomeBarToggle
+            | UiAction::HomeBarClose => self.on_home_ui(action, now_ms, fx),
             UiAction::ShowSection(Section::Settings) => {
                 self.state.section = Section::Settings;
                 self.state.back_stack.clear();
@@ -1689,6 +1720,7 @@ impl Core {
         }
         self.on_sleep_tick(now_ms, fx);
         self.voice_tick(now_ms, fx);
+        self.home_tick(now_ms);
         self.count_listening(now_ms);
         if self.listened_ms >= self.listened_reported + LISTEN_REPORT_MS {
             self.report_listening(fx);
@@ -1946,6 +1978,9 @@ impl Core {
         self.state.device.wifi = wifi;
         if back && !self.state.online {
             self.retry_offline(now_ms, fx);
+        }
+        if back && self.state.home.link == HomeLink::Unreachable {
+            fx.push(Effect::Home(HomeRequest::Reconnect));
         }
     }
 

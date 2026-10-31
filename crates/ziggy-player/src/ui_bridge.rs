@@ -351,6 +351,8 @@ impl Bridge {
             ScreenView::Settings => ScreenKind::Settings,
             ScreenView::Books => ScreenKind::Books,
             ScreenView::Book => ScreenKind::Book,
+            // Task 11 adds the Home screen to Slint.
+            ScreenView::Home => ScreenKind::Grid,
         });
         w.set_section(v.section.index());
         w.set_grid_title(v.grid_title.as_str().into());
