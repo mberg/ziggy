@@ -1331,6 +1331,10 @@ No behaviour yet; this makes the next task's tests compile.
 
 ### Task 7: The Home Assistant service
 
+> **Changed in review (2026-10-31):** the service keeps nothing on disk — no `DiskCache`, and
+> `spawn_home` takes no cache. Before Home Assistant answers, the view shows a tidied entity ID
+> (Task 9). The code below still shows the original cache; the committed code is what counts.
+
 **Files:**
 - Modify: `crates/ziggy-player/src/home/service.rs`
 
@@ -1712,7 +1716,6 @@ No behaviour yet; this makes the next task's tests compile.
           Some(crate::home::service::spawn_home(
               crate::home::service::Backend::Fake,
               Vec::new(),
-              cache.clone(),
               inputs.clone(),
           ))
       } else {
@@ -1730,7 +1733,6 @@ No behaviour yet; this makes the next task's tests compile.
                           token: token.trim().to_string(),
                       },
                       ids,
-                      cache.clone(),
                       inputs.clone(),
                   ))
               }
@@ -1742,8 +1744,7 @@ No behaviour yet; this makes the next task's tests compile.
           }
       };
   ```
-  `cache` is moved into `spawn_library` further down; if the compiler complains, the `.clone()`s
-  above are enough because they come first.
+  The Home Assistant service keeps nothing on disk (the Pi's SD card), so it takes no cache.
 
 - [ ] **Step 2: Pass the pages to the core and the sender to dispatch**
 
@@ -1821,7 +1822,8 @@ No behaviour yet; this makes the next task's tests compile.
           assert_eq!((fan.split, fan.line.as_str()), (false, "Off"));
           let gone = &v.home.tiles[2];
           assert_eq!((gone.enabled, gone.line.as_str()), (false, "Not in Home Assistant"));
-          assert_eq!(v.home.scenes[0].name, "scene.bedtime", "unknown scenes show their ID");
+          assert_eq!(v.home.scenes[0].name, "Bedtime", "before Home Assistant answers, a tidied ID");
+          assert_eq!(tidy_id("light.bay_window"), "Bay window");
       }
 
       #[test]
@@ -1915,6 +1917,13 @@ No behaviour yet; this makes the next task's tests compile.
       pub on: bool,
   }
 
+  /// A name for an entity before Home Assistant has given one: "light.bay_window" → "Bay window".
+  fn tidy_id(entity_id: &str) -> String {
+      let words = entity_id.split_once('.').map_or(entity_id, |(_, id)| id).replace('_', " ");
+      let mut chars = words.chars();
+      chars.next().map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+  }
+
   fn home(state: &AppState) -> HomeView {
       use crate::app::HomeLink;
       use crate::home::types::Domain;
@@ -1927,7 +1936,7 @@ No behaviour yet; this makes the next task's tests compile.
           c.name
               .clone()
               .or_else(|| h.entities.get(&c.entity_id).and_then(|s| s.name.clone()))
-              .unwrap_or_else(|| c.entity_id.clone())
+              .unwrap_or_else(|| tidy_id(&c.entity_id))
       };
       let rooms: std::collections::HashSet<&String> =
           page.tiles.iter().filter_map(|c| h.areas.get(&c.entity_id)).collect();
