@@ -62,7 +62,9 @@ controls = ["light.porch", "light.hall", "light.kitchen",
   along the bottom of the page.
 - An entity of any other domain is a config error, reported at load like other config errors.
 - `ziggy config` asks for the URL (offering the instance it finds over mDNS) and the token, and
-  copies the token to the player like the other sign-ins. Pages are written in the config file.
+  copies the token to the player like the other sign-ins. Pages are written in the config file;
+  with no pages, Home stays off.
+- The URL must be `http://`, the local address; Ziggy doesn't do TLS to Home Assistant.
 
 ## Screen
 
@@ -78,13 +80,14 @@ The mockup shows each of these at 800×480 in the Midnight scheme.
     the tile's name.
   - On: accent fill. Off: surface colour.
   - **Lights are split.** The right third is a strip that shows "Off", or ☀ and the brightness
-    ("70%"). It is there in both states so the name never moves.
+    ("70%"). It is there in both states so the name never moves. While the light is on, the strip
+    fills from the bottom to its brightness, like a level meter, and follows the bar as it's dragged.
     - Tapping a light that's off, anywhere on it, turns it on.
     - Tapping the left part of a light that's on turns it off.
     - Tapping the strip of a light that's on selects it (outline) and opens the brightness bar.
   - Switches and fans toggle on tap.
 - **Scene buttons** in a row at the bottom of the page. A tap runs the scene or script and outlines
-  the button until a tile changes.
+  the button for 4 seconds.
 - **Brightness bar**: while a light is selected, the music bar at the bottom becomes:
   the light's name and level, a full-width slider (about 430 × 60 px, drag anywhere on it), an
   On/Off button and × back to the music. Dragging a light that's off turns it on. After 8 seconds
