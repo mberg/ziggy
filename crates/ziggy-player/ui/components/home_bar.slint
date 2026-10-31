@@ -20,11 +20,11 @@ export component HomeBar inherits Rectangle {
     }
     HorizontalLayout {
         padding: 10px;
-        padding-left: 16px;
-        padding-right: 12px;
-        spacing: 14px;
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 10px;
         VerticalLayout {
-            width: 140px;
+            width: 110px;
             alignment: center;
             spacing: 2px;
             Text {
@@ -52,6 +52,8 @@ export component HomeBar inherits Rectangle {
             Rectangle {
                 x: 0;
                 width: track.width * root.level / 100;
+                border-top-left-radius: 16px;
+                border-bottom-left-radius: 16px;
                 background: Theme.accent;
             }
             Image {
@@ -73,12 +75,12 @@ export component HomeBar inherits Rectangle {
             }
         }
         Rectangle {
-            width: 88px;
+            width: 76px;
             height: 56px;
             border-radius: Theme.radius;
             background: switch.pressed ? Theme.key : Theme.surface-hi;
             accessible-role: button;
-            accessible-label: root.on ? "Off" : "On";
+            accessible-label: root.on ? "Turn off" : "Turn on";
             accessible-action-default => { root.toggle(); }
             Text {
                 text: root.on ? "Off" : "On";
@@ -91,7 +93,7 @@ export component HomeBar inherits Rectangle {
             }
         }
         IconButton {
-            size: 56px;
+            size: 52px;
             icon: @image-url("../icons/close.svg");
             accessible-role: button;
             accessible-label: "Back to the music";

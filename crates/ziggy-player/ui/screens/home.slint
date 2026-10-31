@@ -40,7 +40,7 @@ component HomeTile inherits Rectangle {
             Text {
                 text: root.data.name;
                 color: root.fg;
-                font-size: 17px;
+                font-size: Theme.font-body;
                 font-weight: 800;
                 overflow: elide;
             }
@@ -97,6 +97,10 @@ export component HomeScreen inherits Rectangle {
     callback tap-tile(string);
     callback tap-strip(string);
     callback run-scene(string);
+    // A new page starts at the top.
+    changed page => {
+        grid.content-y = 0;
+    }
     VerticalLayout {
         padding-left: 20px;
         padding-right: 20px;
@@ -134,7 +138,7 @@ export component HomeScreen inherits Rectangle {
                     label := Text {
                         text: name;
                         color: i == root.page ? Theme.accent-text : Theme.text-dim;
-                        font-size: 16px;
+                        font-size: Theme.font-small;
                         font-weight: 800;
                     }
                     chip := TouchArea {
@@ -183,7 +187,7 @@ export component HomeScreen inherits Rectangle {
                     Text {
                         text: scene.name;
                         color: Theme.text;
-                        font-size: 17px;
+                        font-size: Theme.font-body;
                         font-weight: 800;
                         vertical-alignment: center;
                         overflow: elide;

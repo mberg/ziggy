@@ -263,6 +263,15 @@ fn ui_clicks() {
                 enabled: true,
                 ..Default::default()
             },
+            HomeTileData {
+                id: "light.porch".into(),
+                name: "Porch".into(),
+                line: "Unavailable".into(),
+                split: true,
+                strip: "Off".into(),
+                enabled: false,
+                ..Default::default()
+            },
         ])));
         slint::platform::update_timers_and_animations();
         visible_by_label(&window, "Home")
@@ -281,16 +290,31 @@ fn ui_clicks() {
             .single_click(PointerEventButton::Left)
             .await;
         assert_eq!(next_action(), Some(UiAction::HomeTile("light.desk".into())));
+        visible_by_label(&window, "Porch")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert_eq!(next_action(), None, "a greyed tile does nothing");
         visible_by_label(&window, "70%")
             .single_click(PointerEventButton::Left)
             .await;
         assert_eq!(next_action(), Some(UiAction::HomeStrip("light.bay".into())));
+        window.set_mini_visible(true);
+        window.set_track_title("Mini song".into());
+        slint::platform::update_timers_and_animations();
+        visible_by_label(&window, "Mini song");
         window.set_home_bar_visible(true);
         window.set_home_bar_name("Bay window".into());
         window.set_home_bar_level_text("70%".into());
         window.set_home_bar_level(70);
         window.set_home_bar_on(true);
         slint::platform::update_timers_and_animations();
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Mini song")
+                .next()
+                .is_none(),
+            "the brightness bar takes the music bar's place"
+        );
+        visible_by_label(&window, "Turn off");
         // A tap on the slider is a drag that ends at once: the release always follows.
         visible_by_label(&window, "Brightness")
             .single_click(PointerEventButton::Left)
@@ -313,6 +337,10 @@ fn ui_clicks() {
             .await;
         assert_eq!(next_action(), Some(UiAction::HomeBarClose));
         window.set_home_bar_visible(false);
+        slint::platform::update_timers_and_animations();
+        visible_by_label(&window, "Mini song");
+        window.set_mini_visible(false);
+        window.set_track_title("".into());
         window.set_home_enabled(false);
 
         // Keyboard: Shift makes the next letter uppercase, then turns itself off.

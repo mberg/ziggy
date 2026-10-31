@@ -41,11 +41,24 @@ impl Core {
                     if let Some(pct) = self.home_drag.filter(|_| selected && state.is_on()) {
                         state.brightness = Some(brightness_of(pct));
                     }
+                    // Without a finger on the bar, what Home Assistant says wins over what was sent.
+                    if self.home_drag.is_none()
+                        && self
+                            .home_sent_pct
+                            .as_ref()
+                            .is_some_and(|(sent, _)| *sent == id)
+                    {
+                        self.home_sent_pct = None;
+                    }
                     home.entities.insert(id, state);
                 }
             }
             HomeUpdate::Removed(ids) => {
                 for id in ids {
+                    if home.selected.as_deref() == Some(id.as_str()) {
+                        home.selected = None;
+                        self.home_drag = None;
+                    }
                     self.home_undo.remove(&id);
                     home.entities.remove(&id);
                     home.missing.insert(id);
@@ -67,6 +80,10 @@ impl Core {
                 }
                 self.notify(Notice::Home(message), now_ms);
             }
+        }
+        // The bar's controls do nothing without a connection.
+        if self.state.home.link != HomeLink::Connected {
+            self.home_deselect();
         }
     }
 
@@ -124,6 +141,10 @@ impl Core {
             }
             UiAction::HomeBrightness(pct) | UiAction::HomeBrightnessDone(pct) => {
                 let done = matches!(action, UiAction::HomeBrightnessDone(_));
+                // A lifted finger always ends the drag, even when the bar can't be used.
+                if done {
+                    self.home_drag = None;
+                }
                 let Some(id) = self.state.home.selected.clone() else {
                     return;
                 };
@@ -133,8 +154,12 @@ impl Core {
                 self.state.home.bar_until_ms = now_ms + BAR_MS;
                 let pct = pct.clamp(1, 100);
                 self.home_drag = if done { None } else { Some(pct) };
-                if done || now_ms.saturating_sub(self.home_sent_ms) >= DRAG_SEND_MS {
+                let sent = self.home_sent_pct.as_ref() == Some(&(id.clone(), pct));
+                if done && sent {
+                    // A plain tap: the press already sent this level.
+                } else if done || now_ms.saturating_sub(self.home_sent_ms) >= DRAG_SEND_MS {
                     self.home_sent_ms = now_ms;
+                    self.home_sent_pct = Some((id.clone(), pct));
                     self.home_call(&id, "turn_on", Some(pct), fx);
                 } else {
                     // Not sent yet, but the bar follows the finger.
@@ -173,6 +198,7 @@ impl Core {
     pub(super) fn home_deselect(&mut self) {
         self.state.home.selected = None;
         self.home_drag = None;
+        self.home_sent_pct = None;
     }
 
     /// The entity's state when it can be used now.
@@ -198,6 +224,10 @@ impl Core {
             "toggle" => self.state.home.entities.get(id).map(|s| !s.is_on()),
             _ => None,
         };
+        // Anything else sent to the light makes the last dragged level stale.
+        if pct.is_none() {
+            self.home_sent_pct = None;
+        }
         let tile = Domain::of(id).is_some_and(Domain::is_tile);
         if let Some(on) = on.filter(|_| tile) {
             self.home_show(id, on, pct);
@@ -528,6 +558,77 @@ mod tests {
         c.handle(ui(UiAction::HomeBrightness(40)), 3_000);
         c.handle(ui(UiAction::ShowSection(Section::Albums)), 3_100);
         assert_eq!(c.home_drag, None);
+    }
+
+    #[test]
+    fn a_drag_ends_on_release_even_after_the_connection_drops() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 1_000);
+        c.handle(Input::Home(HomeUpdate::Disconnected), 1_100);
+        c.handle(ui(UiAction::HomeBrightnessDone(40)), 1_200);
+        assert_eq!(c.home_drag, None);
+        c.handle(Input::Tick, 10_000);
+        assert_eq!(c.state().home.selected, None);
+    }
+
+    #[test]
+    fn losing_the_link_closes_the_bar() {
+        for update in [
+            HomeUpdate::Disconnected,
+            HomeUpdate::Refused,
+            HomeUpdate::NoToken,
+        ] {
+            let mut c = home();
+            set(&mut c, "light.desk", "on", Some(100));
+            c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+            c.handle(Input::Home(update.clone()), 1_100);
+            assert_eq!(c.state().home.selected, None, "{update:?}");
+        }
+    }
+
+    #[test]
+    fn removing_the_selected_light_closes_the_bar() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        c.handle(ui(UiAction::HomeBrightness(40)), 1_000);
+        c.handle(
+            Input::Home(HomeUpdate::Removed(vec!["light.desk".into()])),
+            1_100,
+        );
+        assert_eq!(c.state().home.selected, None);
+        assert_eq!(c.home_drag, None);
+    }
+
+    #[test]
+    fn a_tap_on_the_bar_sends_its_level_once() {
+        let mut c = home();
+        set(&mut c, "light.desk", "on", Some(100));
+        c.handle(ui(UiAction::HomeStrip("light.desk".into())), 1_000);
+        assert_eq!(
+            home_fx(&c.handle(ui(UiAction::HomeBrightness(50)), 2_000)).len(),
+            1
+        );
+        assert_eq!(
+            home_fx(&c.handle(ui(UiAction::HomeBrightness(50)), 2_010)).len(),
+            0
+        );
+        assert!(
+            home_fx(&c.handle(ui(UiAction::HomeBrightnessDone(50)), 2_020)).is_empty(),
+            "the press already sent 50"
+        );
+        // Switched off between two quick taps: the same level is sent again.
+        c.handle(ui(UiAction::HomeBrightness(50)), 2_500);
+        c.handle(ui(UiAction::HomeBarToggle), 2_510);
+        assert!(home_fx(&c.handle(ui(UiAction::HomeBrightness(50)), 2_600)).is_empty());
+        let fx = c.handle(ui(UiAction::HomeBrightnessDone(50)), 2_610);
+        assert!(fx.contains(&call("light.desk", "turn_on", Some(50))));
+        // A different level on release is still sent.
+        c.handle(ui(UiAction::HomeBrightness(60)), 3_000);
+        let fx = c.handle(ui(UiAction::HomeBrightnessDone(64)), 3_010);
+        assert!(fx.contains(&call("light.desk", "turn_on", Some(64))));
     }
 
     #[test]

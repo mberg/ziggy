@@ -126,6 +126,8 @@ pub struct Core {
     home_undo: HashMap<String, Option<crate::home::types::EntityState>>,
     /// When a dragged brightness was last sent.
     home_sent_ms: u64,
+    /// The light and level a drag last sent.
+    home_sent_pct: Option<(String, u8)>,
     /// The brightness under the finger while the bar is being dragged.
     home_drag: Option<u8>,
 }
@@ -226,6 +228,7 @@ impl Core {
             offline_retry_ms: now_ms,
             home_undo: HashMap::new(),
             home_sent_ms: 0,
+            home_sent_pct: None,
             home_drag: None,
         };
         let mut fx = Vec::new();
