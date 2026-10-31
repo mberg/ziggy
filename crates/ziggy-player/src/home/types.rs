@@ -222,6 +222,34 @@ pub fn area_names(entities: &Value, devices: &Value, areas: &Value) -> HashMap<S
         .collect()
 }
 
+/// The configured pages, split into tiles and scene buttons. Config checks already refused any
+/// other domain.
+pub fn pages(config: &crate::config::HomeAssistantConfig) -> Vec<Page> {
+    config
+        .pages
+        .iter()
+        .map(|page| {
+            let controls: Vec<Control> = page
+                .controls
+                .iter()
+                .filter_map(|c| {
+                    Some(Control {
+                        entity_id: c.entity().to_string(),
+                        domain: Domain::of(c.entity())?,
+                        name: c.name().map(str::to_string),
+                    })
+                })
+                .collect();
+            let (tiles, scenes) = controls.into_iter().partition(|c| c.domain.is_tile());
+            Page {
+                name: page.name.clone(),
+                tiles,
+                scenes,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

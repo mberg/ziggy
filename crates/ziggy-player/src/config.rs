@@ -59,6 +59,56 @@ pub struct Config {
     /// Defaults to gemini-3.5-flash-lite.
     #[serde(default)]
     pub gemini_model: Option<String>,
+    /// Home Assistant controls on a Home screen; Home is on when this has pages.
+    #[serde(default)]
+    pub home_assistant: Option<HomeAssistantConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeAssistantConfig {
+    /// The local address, e.g. "http://192.168.1.69:8123".
+    pub url: String,
+    /// A file holding a long-lived access token; `<state_dir>/ha-token` by default.
+    #[serde(default)]
+    pub token_file: Option<PathBuf>,
+    #[serde(default, rename = "page")]
+    pub pages: Vec<HomePageConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomePageConfig {
+    pub name: String,
+    pub controls: Vec<ControlConfig>,
+}
+
+/// An entity ID, or a table with the name to show instead of Home Assistant's.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ControlConfig {
+    Id(String),
+    Named {
+        entity: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+impl ControlConfig {
+    pub fn entity(&self) -> &str {
+        match self {
+            ControlConfig::Id(id) => id,
+            ControlConfig::Named { entity, .. } => entity,
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            ControlConfig::Id(_) => None,
+            ControlConfig::Named { name, .. } => name.as_deref(),
+        }
+    }
 }
 
 fn default_dim_after_secs() -> u64 {
@@ -89,7 +139,36 @@ impl Config {
             config.off_after_secs > config.dim_after_secs,
             "off_after_secs must be greater than dim_after_secs"
         );
+        if let Some(ha) = &config.home_assistant {
+            ensure!(
+                ha.url.starts_with("http://"),
+                "home_assistant.url must be the local http:// address"
+            );
+            for page in &ha.pages {
+                ensure!(
+                    !page.name.trim().is_empty(),
+                    "a home_assistant page needs a name"
+                );
+                for control in &page.controls {
+                    ensure!(
+                        crate::home::types::Domain::of(control.entity()).is_some(),
+                        "{} isn't a light, switch, fan, scene or script",
+                        control.entity()
+                    );
+                }
+            }
+        }
         Ok(config)
+    }
+
+    /// The Home Assistant token file, when Home Assistant is set up.
+    pub fn home_token_file(&self) -> Option<PathBuf> {
+        let ha = self.home_assistant.as_ref()?;
+        Some(
+            ha.token_file
+                .clone()
+                .unwrap_or_else(|| self.state_dir.join("ha-token")),
+        )
     }
 
     pub fn soloist_api_key_file(&self) -> PathBuf {
@@ -159,5 +238,49 @@ mod tests {
         let old = "device_name = \"Den\"\nstate_dir = \"/x\"\naudio_backend = \"alsa\"\n\
                    audio_device = \"plughw:CARD=Headphones\"\nbitrate = 320\n";
         assert_eq!(Config::parse(old).unwrap().device_name, "Den");
+    }
+
+    const HA: &str = "device_name = \"Leo\"\nstate_dir = \"/var/lib/ziggy\"\n\
+        [home_assistant]\nurl = \"http://192.168.1.69:8123\"\n\
+        [[home_assistant.page]]\nname = \"Micah's room\"\n\
+        controls = [\"light.desk\", { entity = \"switch.fairy\", name = \"Fairy lights\" }, \"scene.bedtime\"]\n";
+
+    #[test]
+    fn home_assistant_pages_parse_with_a_default_token_path() {
+        let c = Config::parse(HA).unwrap();
+        let ha = c.home_assistant.as_ref().unwrap();
+        assert_eq!(
+            c.home_token_file(),
+            Some(PathBuf::from("/var/lib/ziggy/ha-token"))
+        );
+        let pages = crate::home::types::pages(ha);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].name, "Micah's room");
+        assert_eq!(pages[0].tiles.len(), 2);
+        assert_eq!(pages[0].tiles[1].name.as_deref(), Some("Fairy lights"));
+        assert_eq!(pages[0].scenes[0].entity_id, "scene.bedtime");
+    }
+
+    #[test]
+    fn home_assistant_is_off_without_the_section() {
+        let c = Config::parse("device_name = \"Leo\"\nstate_dir = \"/x\"\n").unwrap();
+        assert!(c.home_assistant.is_none());
+        assert_eq!(c.home_token_file(), None);
+    }
+
+    #[test]
+    fn home_assistant_rejects_other_domains_and_https() {
+        let climate = HA.replace("\"light.desk\"", "\"climate.hall\"");
+        let err = Config::parse(&climate).unwrap_err();
+        assert!(err.to_string().contains("climate.hall"), "{err}");
+        let https = HA.replace("http://", "https://");
+        let err = Config::parse(&https).unwrap_err();
+        assert!(err.to_string().contains("http://"), "{err}");
+    }
+
+    #[test]
+    fn home_assistant_without_pages_is_allowed() {
+        let c = Config::parse("device_name = \"Leo\"\nstate_dir = \"/x\"\n[home_assistant]\nurl = \"http://ha.local:8123\"\n").unwrap();
+        assert!(crate::home::types::pages(c.home_assistant.as_ref().unwrap()).is_empty());
     }
 }
