@@ -37,6 +37,10 @@ const ACCOUNT_KEY: &str = "account";
 pub const WS_PORT: u16 = 47321;
 /// How long a list may take to skip ahead to the tapped song before the sound comes back anyway.
 const SKIP_TIMEOUT: Duration = Duration::from_secs(20);
+/// Soloist tries its saved sign-in once, at start; after a power cut that's before the Wi-Fi is
+/// up. It's started again after this long, then twice as long each time, up to the most.
+const SIGN_IN_RETRY: Duration = Duration::from_secs(20);
+const SIGN_IN_RETRY_MOST: Duration = Duration::from_secs(600);
 
 /// Starts a list at a song on this device through Spotify's Web API, which is instant. Gets the
 /// list's URI and where to start; false when that didn't work and the engine should skip ahead
@@ -95,6 +99,7 @@ async fn run(
 ) {
     let mut backoff = Duration::from_secs(2);
     let mut force_download = false;
+    let mut sign_in_retry = SIGN_IN_RETRY;
     loop {
         let started = std::time::Instant::now();
         let result = serve(
@@ -104,15 +109,24 @@ async fn run(
             &inputs,
             &mut commands,
             force_download,
+            sign_in_retry,
         )
         .await;
         force_download = false;
         let _ = inputs.send(Input::Player(PlayerUpdate::Disconnected));
+        if !matches!(result, Ok(Exit::SignInFailed)) {
+            sign_in_retry = SIGN_IN_RETRY;
+        }
         match result {
             Ok(Exit::CommandsClosed) => return,
             Ok(Exit::Expired) => {
                 tracing::warn!("Soloist's build expired; fetching a new one");
                 force_download = true;
+                continue;
+            }
+            Ok(Exit::SignInFailed) => {
+                tracing::info!("trying Soloist's saved sign-in again");
+                sign_in_retry = (sign_in_retry * 2).min(SIGN_IN_RETRY_MOST);
                 continue;
             }
             Ok(Exit::Stopped(status)) => tracing::warn!("Soloist stopped ({status})"),
@@ -130,6 +144,8 @@ enum Exit {
     CommandsClosed,
     Expired,
     Stopped(String),
+    /// The saved sign-in didn't work and nobody picked the player since; start again to retry.
+    SignInFailed,
 }
 
 async fn serve(
@@ -139,6 +155,7 @@ async fn serve(
     inputs: &UnboundedSender<Input>,
     commands: &mut UnboundedReceiver<PlayerCommand>,
     force_download: bool,
+    sign_in_retry: Duration,
 ) -> anyhow::Result<Exit> {
     let bin = ensure_binary(&settings.bin(), force_download).await?;
     let key = std::fs::read_to_string(&settings.api_key_file)
@@ -184,7 +201,8 @@ async fn serve(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    forward_logs(&mut child);
+    let (sign_in_failed, mut sign_in_failures) = mpsc::unbounded_channel();
+    forward_logs(&mut child, sign_in_failed);
 
     let ws = match connect(&mut child).await? {
         Ok(ws) => ws,
@@ -194,6 +212,9 @@ async fn serve(
     tracing::info!("Soloist is running as {:?}", settings.device_name);
 
     let mut session = Session::default();
+    // When to start Soloist again to retry a saved sign-in that failed. It keeps running till
+    // then, so the player can still be picked in a Spotify app.
+    let mut retry_sign_in_at: Option<std::time::Instant> = None;
     let mut clock = tokio::time::interval(Duration::from_secs(1));
     clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -201,6 +222,9 @@ async fn serve(
         tokio::select! {
             _ = clock.tick() => {
                 let now = std::time::Instant::now();
+                if !session.logged_in && retry_sign_in_at.is_some_and(|at| now >= at) {
+                    return Ok(Exit::SignInFailed);
+                }
                 session.give_up_skipping(now);
                 if session.skipping.is_none()
                     && let Some(position_ms) = session.position_now(now)
@@ -209,6 +233,14 @@ async fn serve(
                 }
             }
             status = child.wait() => return Ok(exit_of(status?)),
+            Some(()) = sign_in_failures.recv() => {
+                if !session.logged_in {
+                    tracing::info!(
+                        "Soloist couldn't sign in; trying again in {}s", sign_in_retry.as_secs()
+                    );
+                    retry_sign_in_at = Some(std::time::Instant::now() + sign_in_retry);
+                }
+            }
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(Exit::CommandsClosed) };
                 if !session.logged_in {
@@ -227,6 +259,7 @@ async fn serve(
                         session.logged_in = logged_in;
                         let _ = inputs.send(Input::PairingNeeded(!logged_in));
                         if logged_in {
+                            retry_sign_in_at = None;
                             let _ = inputs.send(Input::Player(PlayerUpdate::Connected));
                             frames.push(protocol::command("get_state"));
                         } else {
@@ -519,8 +552,9 @@ async fn jack_node() -> Option<String> {
 }
 
 /// Soloist's own log goes to the journal; the "playing … [0:10 / 3:03]" line it prints every
-/// 10 s only at debug level.
-fn forward_logs(child: &mut Child) {
+/// 10 s only at debug level. Its "login failed" line is passed on to `sign_in_failed`, since
+/// the WebSocket only says "not signed in".
+fn forward_logs(child: &mut Child, sign_in_failed: UnboundedSender<()>) {
     for stream in [
         child
             .stdout
@@ -534,9 +568,13 @@ fn forward_logs(child: &mut Child) {
     .into_iter()
     .flatten()
     {
+        let sign_in_failed = sign_in_failed.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                if line.contains(": login failed") {
+                    let _ = sign_in_failed.send(());
+                }
                 if line.contains(": playing spotify:") || line.contains("RTKit") {
                     tracing::debug!(target: "soloist", "{line}");
                 } else {
