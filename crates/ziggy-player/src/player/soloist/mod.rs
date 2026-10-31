@@ -226,6 +226,28 @@ async fn serve(
                     return Ok(Exit::SignInFailed);
                 }
                 session.give_up_skipping(now);
+                if session.details_due(now) {
+                    frames.push(protocol::command("get_state"));
+                }
+                if session.inactive_check.is_some_and(|at| now >= at) {
+                    session.inactive_check = None;
+                    // Soloist sometimes says another device took over while it goes on playing,
+                    // then reports that device's old song. Its sound still going out gives it away.
+                    let recently = session
+                        .reactivated_at
+                        .is_some_and(|at| now.duration_since(at) < REACTIVATE_GAP);
+                    if !recently && spotify_playing().await {
+                        tracing::info!("Soloist lost the active device while still playing; taking it back");
+                        session.reactivated_at = Some(now);
+                        frames.push(protocol::command("activate"));
+                    } else {
+                        // Another device took over playback: this one is no longer playing.
+                        let paused = PlayerUpdate::Paused { position_ms: 0 };
+                        if session.forward(&paused, now) {
+                            let _ = inputs.send(Input::Player(paused));
+                        }
+                    }
+                }
                 if session.skipping.is_none()
                     && let Some(position_ms) = session.position_now(now)
                 {
@@ -285,6 +307,13 @@ async fn serve(
                     Event::Queue { upcoming, .. } => {
                         frames = session.start_from_queue(&upcoming, std::time::Instant::now());
                     }
+                    Event::Active(true) => session.inactive_check = None,
+                    Event::Active(false) => {
+                        if session.inactive_check.is_none() {
+                            session.inactive_check =
+                                Some(std::time::Instant::now() + INACTIVE_CHECK);
+                        }
+                    }
                     Event::Error(message) => tracing::warn!("Soloist refused a command: {message}"),
                     Event::Other => {}
                 }
@@ -330,6 +359,25 @@ async fn serve(
 /// stream of volumes, and late echoes would pull it back.
 const VOLUME_ECHO: Duration = Duration::from_millis(1500);
 
+/// After a song arrives without its name, Soloist is asked for it again after these waits: soon
+/// at first, since asking is cheap and the screen is blank meanwhile, then less often.
+const DETAILS_RETRIES: [Duration; 8] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_millis(750),
+    Duration::from_secs(1),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+];
+
+/// How long Soloist may say another device is playing before Ziggy checks. It often says so for
+/// a moment when a phone sends a song, and takes the device back by itself.
+const INACTIVE_CHECK: Duration = Duration::from_secs(3);
+/// Ziggy takes the device back at most this often, so it never fights another device.
+const REACTIVATE_GAP: Duration = Duration::from_secs(30);
+
 /// What the engine remembers between frames.
 #[derive(Default)]
 struct Session {
@@ -349,6 +397,12 @@ struct Session {
     skipping: Option<(Option<String>, u8, std::time::Instant)>,
     /// Frames to send after an event, such as the volume put back once the song is reached.
     outbox: Vec<Value>,
+    /// A song that came without its name: when to ask for it again, and how many times so far.
+    details: Option<(String, std::time::Instant, usize)>,
+    /// Soloist said another device is playing: when to check whether that's so.
+    inactive_check: Option<std::time::Instant>,
+    /// When Ziggy last told Soloist to take the device back.
+    reactivated_at: Option<std::time::Instant>,
 }
 
 /// Starting a list.
@@ -387,6 +441,12 @@ impl Session {
             PlayerUpdate::TrackChanged(t) => {
                 self.current_uri = Some(t.uri.clone());
                 self.anchor = Some((0, now, self.speed()));
+                let waiting = self.details.as_ref().is_some_and(|(uri, ..)| *uri == t.uri);
+                if !t.name.is_empty() {
+                    self.details = None;
+                } else if !waiting {
+                    self.details = Some((t.uri.clone(), now + DETAILS_RETRIES[0], 0));
+                }
             }
             PlayerUpdate::Volume { percent } => {
                 if self
@@ -402,6 +462,22 @@ impl Session {
                 self.anchor = Some((self.position_at(now), now, 0.0));
             }
             _ => {}
+        }
+        true
+    }
+
+    /// True when it's time to ask Soloist again for a song's name and cover.
+    fn details_due(&mut self, now: std::time::Instant) -> bool {
+        let Some((uri, at, tries)) = self.details.take() else {
+            return false;
+        };
+        if now < at {
+            self.details = Some((uri, at, tries));
+            return false;
+        }
+        let tries = tries + 1;
+        if let Some(wait) = DETAILS_RETRIES.get(tries) {
+            self.details = Some((uri, now + *wait, tries));
         }
         true
     }
@@ -538,9 +614,8 @@ fn own_uid() -> Option<u32> {
     None
 }
 
-/// The PipeWire node for the Pi's headphone jack, e.g.
-/// `alsa_output.platform-3f00b840.mailbox.stereo-fallback` on a Pi 3.
-async fn jack_node() -> Option<String> {
+/// PipeWire's objects, as `pw-dump` prints them.
+async fn pw_dump() -> Option<String> {
     let mut cmd = Command::new("pw-dump");
     if std::env::var_os("XDG_RUNTIME_DIR").is_none()
         && let Some(uid) = own_uid()
@@ -548,7 +623,20 @@ async fn jack_node() -> Option<String> {
         cmd.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
     }
     let out = cmd.output().await.ok()?;
-    protocol::jack_node(&String::from_utf8_lossy(&out.stdout))
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Whether Soloist's sound is going out now.
+async fn spotify_playing() -> bool {
+    pw_dump()
+        .await
+        .is_some_and(|dump| protocol::spotify_playing(&dump))
+}
+
+/// The PipeWire node for the Pi's headphone jack, e.g.
+/// `alsa_output.platform-3f00b840.mailbox.stereo-fallback` on a Pi 3.
+async fn jack_node() -> Option<String> {
+    protocol::jack_node(&pw_dump().await?)
 }
 
 /// Soloist's own log goes to the journal; the "playing … [0:10 / 3:03]" line it prints every
@@ -853,5 +941,45 @@ mod tests {
             std::time::Instant::now(),
         );
         assert_eq!(s.load.as_ref().map(|l| l.start.clone()), Some(None));
+    }
+
+    #[test]
+    fn a_song_without_its_name_is_asked_for_again_a_few_times() {
+        let t0 = std::time::Instant::now();
+        let secs = |n| t0 + Duration::from_secs(n);
+        let song = |name: &str| {
+            PlayerUpdate::TrackChanged(Track {
+                uri: "spotify:track:a".into(),
+                name: name.into(),
+                artists: String::new(),
+                album: String::new(),
+                image_url: None,
+                duration_ms: 1,
+                album_uri: None,
+                artist_uri: None,
+            })
+        };
+        let mut s = Session::default();
+        assert!(
+            s.forward(&song(""), t0),
+            "the song still reaches the screen"
+        );
+        let ms = |n| t0 + Duration::from_millis(n);
+        let asks: Vec<u64> = (0..12_000)
+            .step_by(50)
+            .filter(|&n| s.details_due(ms(n)))
+            .collect();
+        assert_eq!(
+            asks,
+            [250, 750, 1250, 2000, 3000, 4000, 6000, 8000],
+            "soon at first, then further apart"
+        );
+        // Its name arriving stops the asking.
+        s.forward(&song(""), secs(20));
+        s.forward(&song("Song"), secs(20));
+        assert!(!(20..30).any(|n| s.details_due(secs(n))));
+        // A song with its name isn't asked about.
+        s.forward(&song("Song"), secs(40));
+        assert!(!s.details_due(secs(45)));
     }
 }
