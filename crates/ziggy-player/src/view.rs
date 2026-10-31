@@ -140,7 +140,6 @@ pub struct HomeTileView {
     pub strip: String,
     /// How bright the strip is drawn, 0-100; 0 while off.
     pub level: u8,
-    pub sun: bool,
     pub selected: bool,
     pub enabled: bool,
 }
@@ -245,7 +244,6 @@ fn home(state: &AppState) -> HomeView {
                     None => "On".into(),
                 },
                 level: if shown { percent.unwrap_or(100) } else { 0 },
-                sun: shown,
                 selected: h.selected.as_deref() == Some(c.entity_id.as_str()),
                 enabled,
             }
@@ -258,7 +256,9 @@ fn home(state: &AppState) -> HomeView {
             id: c.entity_id.clone(),
             name: name_of(c),
             ran: h.ran.as_ref().is_some_and(|(id, _)| id == &c.entity_id),
-            enabled: connected && h.entities.get(&c.entity_id).is_none_or(|s| s.available()),
+            enabled: connected
+                && !h.missing.contains(&c.entity_id)
+                && h.entities.get(&c.entity_id).is_none_or(|s| s.available()),
         })
         .collect();
     let bar = h.selected.as_ref().and_then(|id| {
@@ -736,7 +736,12 @@ pub fn build(state: &AppState) -> View {
         books: books_view(state),
         book: book_view(state),
         home_enabled: state.home.enabled(),
-        home: home(state),
+        // Only the Home screen shows it; the rail needs just `home_enabled`.
+        home: if state.screen == Screen::Home {
+            home(state)
+        } else {
+            HomeView::default()
+        },
         recent_chips: state.screen == Screen::Grid(Section::Recent),
         recent_songs: state.recent_songs,
         recent_song_rows: if state.recent_songs && state.screen == Screen::Grid(Section::Recent) {
@@ -1836,14 +1841,8 @@ mod tests {
             assert_eq!(v.home.pages, vec!["Room".to_string()]);
             let desk = &v.home.tiles[0];
             assert_eq!(
-                (
-                    desk.name.as_str(),
-                    desk.on,
-                    desk.split,
-                    desk.strip.as_str(),
-                    desk.sun
-                ),
-                ("Desk lamp", true, true, "70%", true)
+                (desk.name.as_str(), desk.on, desk.split, desk.strip.as_str(),),
+                ("Desk lamp", true, true, "70%")
             );
             assert_eq!(desk.level, 70, "the strip is drawn as bright as the light");
             assert_eq!(desk.line, "", "a one-room page doesn't repeat the room");
@@ -1879,7 +1878,7 @@ mod tests {
                 Input::Home(HomeUpdate::Areas(
                     [
                         ("light.porch".to_string(), "Outside".to_string()),
-                        ("light.desk".to_string(), "Micah's room".to_string()),
+                        ("light.desk".to_string(), "Bedroom".to_string()),
                     ]
                     .into(),
                 )),
@@ -1928,7 +1927,7 @@ mod tests {
             for (tile, name) in v.home.tiles.iter().zip(["Bay window", "Fan"]) {
                 assert_eq!(tile.name, name);
                 assert_eq!(tile.line, "", "nothing known yet, so nothing claimed");
-                assert!(!tile.enabled && !tile.on && !tile.sun);
+                assert!(!tile.enabled && !tile.on);
                 assert_eq!((tile.strip.as_str(), tile.level), ("Off", 0));
             }
             assert!(!v.home.scenes[0].enabled);
@@ -1963,7 +1962,7 @@ mod tests {
             core.handle(Input::Home(HomeUpdate::Disconnected), 0);
             let v = build(core.state());
             let desk = &v.home.tiles[0];
-            assert!(!desk.enabled && !desk.on && !desk.sun);
+            assert!(!desk.enabled && !desk.on);
             assert_eq!((desk.strip.as_str(), desk.level), ("Off", 0));
             let fan = &v.home.tiles[1];
             assert_eq!((fan.enabled, fan.on, fan.line.as_str()), (false, false, ""));
@@ -1985,6 +1984,28 @@ mod tests {
         }
 
         #[test]
+        fn a_scene_not_in_home_assistant_is_greyed() {
+            let mut core = core_with(page(&[], &["scene.bedtime", "scene.gone"]));
+            core.handle(
+                Input::Home(HomeUpdate::Removed(vec!["scene.gone".into()])),
+                0,
+            );
+            let v = build(core.state());
+            assert!(v.home.scenes[0].enabled);
+            assert!(!v.home.scenes[1].enabled);
+        }
+
+        #[test]
+        fn home_is_built_only_on_its_screen() {
+            let mut core = core_with(page(&["light.desk"], &["scene.bedtime"]));
+            assert_eq!(build(core.state()).home.tiles.len(), 1);
+            core.handle(Input::Ui(UiAction::ShowSection(Section::Playlists)), 0);
+            let v = build(core.state());
+            assert!(v.home_enabled, "the rail still shows Home");
+            assert_eq!(v.home, HomeView::default());
+        }
+
+        #[test]
         fn icons_follow_the_domain() {
             let core = core_with(page(&["light.a", "switch.b", "fan.c"], &[]));
             let icons: Vec<HomeIcon> = build(core.state())
@@ -2002,7 +2023,7 @@ mod tests {
             states(&mut core, &[("light.desk", "Desk", "on", None)]);
             let tile = &build(core.state()).home.tiles[0];
             assert_eq!(
-                (tile.strip.as_str(), tile.level, tile.sun),
+                (tile.strip.as_str(), tile.level, tile.on),
                 ("On", 100, true)
             );
             assert!(!tile.selected);

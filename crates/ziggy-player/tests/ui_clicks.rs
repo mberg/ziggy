@@ -240,7 +240,7 @@ fn ui_clicks() {
         window.set_home_enabled(true);
         window.set_screen(ScreenKind::Home);
         window.set_home_pages(slint::ModelRc::new(slint::VecModel::from(vec![
-            slint::SharedString::from("Micah's room"),
+            slint::SharedString::from("Bedroom"),
             slint::SharedString::from("Downstairs"),
         ])));
         window.set_home_tiles(slint::ModelRc::new(slint::VecModel::from(vec![
@@ -259,7 +259,6 @@ fn ui_clicks() {
                 split: true,
                 strip: "70%".into(),
                 level: 70,
-                sun: true,
                 enabled: true,
                 ..Default::default()
             },

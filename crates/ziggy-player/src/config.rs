@@ -165,10 +165,15 @@ impl Config {
                     page.name
                 );
                 for control in &page.controls {
+                    let id = control.entity();
                     ensure!(
-                        crate::home::types::Domain::of(control.entity()).is_some(),
-                        "{} isn't an entity ID of a light, switch, fan, scene or script",
-                        control.entity()
+                        crate::home::types::is_entity_id(id),
+                        "{id:?} isn't an entity ID: use lowercase letters, digits and _, \
+                         with a dot after the domain, like \"light.desk\""
+                    );
+                    ensure!(
+                        crate::home::types::Domain::of(id).is_some(),
+                        "{id} isn't an entity ID of a light, switch, fan, scene or script"
                     );
                 }
             }
@@ -257,7 +262,7 @@ mod tests {
 
     const HA: &str = "device_name = \"Leo\"\nstate_dir = \"/var/lib/ziggy\"\n\
         [home_assistant]\nurl = \"http://192.168.1.69:8123\"\n\
-        [[home_assistant.page]]\nname = \"Micah's room\"\n\
+        [[home_assistant.page]]\nname = \"Bedroom\"\n\
         controls = [\"light.desk\", { entity = \"switch.fairy\", name = \"Fairy lights\" }, \"scene.bedtime\"]\n";
 
     #[test]
@@ -270,7 +275,7 @@ mod tests {
         );
         let pages = crate::home::types::pages(ha);
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].name, "Micah's room");
+        assert_eq!(pages[0].name, "Bedroom");
         assert_eq!(pages[0].tiles.len(), 2);
         assert_eq!(pages[0].tiles[1].name.as_deref(), Some("Fairy lights"));
         assert_eq!(pages[0].scenes[0].entity_id, "scene.bedtime");
@@ -320,5 +325,13 @@ mod tests {
         let bare = HA.replace("\"light.desk\"", "\"light.\"");
         let err = Config::parse(&bare).unwrap_err();
         assert!(err.to_string().contains("light."), "{err}");
+        for bad in ["light.desk-lamp", "light.desk lamp", "light.Desk"] {
+            let config = HA.replace("\"light.desk\"", &format!("\"{bad}\""));
+            let err = Config::parse(&config).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("{bad:?}")) && err.contains("lowercase"),
+                "{err}"
+            );
+        }
     }
 }

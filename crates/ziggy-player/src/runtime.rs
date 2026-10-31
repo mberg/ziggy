@@ -129,11 +129,7 @@ async fn run(
             let home = match token {
                 None => None,
                 Some(Ok(token)) => {
-                    let ids = pages
-                        .iter()
-                        .flat_map(|p| p.tiles.iter().chain(&p.scenes))
-                        .map(|c| c.entity_id.clone())
-                        .collect();
+                    let ids = home_entity_ids(&pages);
                     Some(crate::home::service::spawn_home(
                         crate::home::service::Backend::Real {
                             url: ha.url.clone(),
@@ -463,6 +459,17 @@ fn start_through_web_api(
     })
 }
 
+/// Every entity on the pages, once each, to subscribe to.
+fn home_entity_ids(pages: &[crate::home::types::Page]) -> Vec<String> {
+    pages
+        .iter()
+        .flat_map(|p| p.tiles.iter().chain(&p.scenes))
+        .map(|c| c.entity_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -470,6 +477,22 @@ mod tests {
     use super::*;
     use crate::app::{PlayStatus, UiAction};
     use crate::model::Section;
+
+    #[test]
+    fn an_entity_on_two_pages_is_subscribed_to_once() {
+        let config = Config::parse(
+            "device_name = \"Test\"\nstate_dir = \"/x\"\n\
+             [home_assistant]\nurl = \"http://ha.local:8123\"\n\
+             [[home_assistant.page]]\nname = \"Up\"\ncontrols = [\"light.porch\", \"light.desk\", \"scene.night\"]\n\
+             [[home_assistant.page]]\nname = \"Down\"\ncontrols = [\"light.porch\", \"scene.night\"]\n",
+        )
+        .unwrap();
+        let pages = crate::home::types::pages(config.home_assistant.as_ref().unwrap());
+        assert_eq!(
+            home_entity_ids(&pages),
+            vec!["light.desk", "light.porch", "scene.night"]
+        );
+    }
 
     #[test]
     fn fake_runtime_loads_library_and_plays() {

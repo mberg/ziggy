@@ -67,7 +67,7 @@ component HomeTile inherits Rectangle {
         VerticalLayout {
             alignment: center;
             spacing: 6px;
-            if root.data.sun: Image {
+            if root.data.on: Image {
                 source: @image-url("../icons/sun.svg");
                 height: 26px;
                 image-fit: contain;

@@ -11,7 +11,7 @@ const DRAG_SEND_MS: u64 = 250;
 const RAN_MS: u64 = 4_000;
 
 impl Core {
-    pub(super) fn on_home(&mut self, update: HomeUpdate, now_ms: u64, _fx: &mut Vec<Effect>) {
+    pub(super) fn on_home(&mut self, update: HomeUpdate, now_ms: u64) {
         let home = &mut self.state.home;
         match update {
             HomeUpdate::Connected => home.link = HomeLink::Connected,

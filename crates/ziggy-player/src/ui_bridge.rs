@@ -715,7 +715,6 @@ fn home_tile_data(t: &view::HomeTileView) -> HomeTileData {
         split: t.split,
         strip: t.strip.as_str().into(),
         level: i32::from(t.level),
-        sun: t.sun,
         selected: t.selected,
         enabled: t.enabled,
     }

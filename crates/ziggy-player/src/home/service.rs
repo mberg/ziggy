@@ -14,7 +14,7 @@ use super::client::{self, Frame};
 use super::types::{Control, Domain, EntityState, Page, States, area_names, brightness_of};
 use crate::app::{HomeRequest, HomeUpdate, Input};
 
-pub const RETRY_FIRST: Duration = Duration::from_secs(2);
+const RETRY_FIRST: Duration = Duration::from_secs(2);
 const RETRY_MOST: Duration = Duration::from_secs(60);
 /// Pinged this often; a ping unanswered by the next one means the link is dead.
 const PING_EVERY: Duration = Duration::from_secs(30);
@@ -211,9 +211,8 @@ async fn session(
                         }
                     }
                     Frame::Result { id: SUBSCRIPTION, ok, error, .. } => {
-                        if !ok {
-                            tracing::warn!("Home Assistant refused the subscription: {error}");
-                        }
+                        // No states would ever come: show the banner and try again later.
+                        anyhow::ensure!(ok, "Home Assistant refused the subscription: {error}");
                     }
                     Frame::Result { id, ok, result, error }
                         if REGISTRIES.iter().any(|(r, _)| *r == id) =>
@@ -267,7 +266,7 @@ async fn session(
     }
 }
 
-/// The pretend house `--fake` shows when the config has no Home Assistant pages.
+/// The pretend house `--fake` always shows, whatever the config's Home Assistant pages.
 pub fn fake_pages() -> Vec<Page> {
     let c = |id: &str| Control {
         entity_id: id.into(),
@@ -276,13 +275,13 @@ pub fn fake_pages() -> Vec<Page> {
     };
     vec![
         Page {
-            name: "Micah's room".into(),
+            name: "Bedroom".into(),
             tiles: [
-                "light.micah_ceiling",
-                "light.micah_desk",
-                "light.micah_night",
+                "light.bedroom_ceiling",
+                "light.bedroom_desk",
+                "light.bedroom_night",
                 "switch.fairy_lights",
-                "fan.micah",
+                "fan.bedroom",
             ]
             .map(c)
             .to_vec(),
@@ -306,28 +305,22 @@ pub fn fake_pages() -> Vec<Page> {
 async fn run_fake(inputs: UnboundedSender<Input>, mut requests: UnboundedReceiver<HomeRequest>) {
     let devices = [
         (
-            "light.micah_ceiling",
+            "light.bedroom_ceiling",
             "Ceiling light",
-            "Micah's room",
+            "Bedroom",
             "on",
             Some(178),
         ),
-        ("light.micah_desk", "Desk lamp", "Micah's room", "off", None),
+        ("light.bedroom_desk", "Desk lamp", "Bedroom", "off", None),
         (
-            "light.micah_night",
+            "light.bedroom_night",
             "Night light",
-            "Micah's room",
+            "Bedroom",
             "on",
             Some(38),
         ),
-        (
-            "switch.fairy_lights",
-            "Fairy lights",
-            "Micah's room",
-            "on",
-            None,
-        ),
-        ("fan.micah", "Fan", "Micah's room", "off", None),
+        ("switch.fairy_lights", "Fairy lights", "Bedroom", "on", None),
+        ("fan.bedroom", "Fan", "Bedroom", "off", None),
         (
             "light.kitchen",
             "Kitchen lights",
@@ -620,6 +613,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_subscription_disconnects_and_tries_again() {
+        let (listener, url) = listen().await;
+        let (requests, mut rx) = real(&url, &["light.desk"]);
+        let mut ws = accept(&listener).await;
+        sign_in(&mut ws).await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Connected);
+        assert_eq!(hear(&mut ws).await["type"], "subscribe_entities");
+        say(
+            &mut ws,
+            json!({"id": 1, "type": "result", "success": false,
+                   "error": {"code": "unknown_command", "message": "Unknown command."}}),
+        )
+        .await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Disconnected);
+        // Asked to try now rather than wait out the delay: it comes back and subscribes again.
+        requests.send(HomeRequest::Reconnect).unwrap();
+        let mut ws = accept(&listener).await;
+        sign_in(&mut ws).await;
+        assert_eq!(next(&mut rx).await, HomeUpdate::Connected);
+        assert_eq!(hear(&mut ws).await["type"], "subscribe_entities");
+    }
+
+    #[tokio::test]
     async fn a_closed_connection_is_reported() {
         let (listener, url) = listen().await;
         let (_requests, mut rx) = real(&url, &["light.desk"]);
@@ -638,7 +654,7 @@ mod tests {
         wait_for(&mut rx, |u| (u == HomeUpdate::Connected).then_some(())).await;
         requests
             .send(HomeRequest::Call {
-                entity_id: "light.micah_desk".into(),
+                entity_id: "light.bedroom_desk".into(),
                 service: "turn_on",
                 brightness_pct: Some(40),
             })
@@ -646,7 +662,7 @@ mod tests {
         let desk = wait_for(&mut rx, |u| match u {
             HomeUpdate::States(states) => states
                 .into_iter()
-                .find(|(id, s)| id == "light.micah_desk" && s.is_on()),
+                .find(|(id, s)| id == "light.bedroom_desk" && s.is_on()),
             _ => None,
         })
         .await;
@@ -679,7 +695,7 @@ mod tests {
         wait_for(&mut rx, |u| (u == HomeUpdate::Connected).then_some(())).await;
         requests
             .send(HomeRequest::Call {
-                entity_id: "fan.micah".into(),
+                entity_id: "fan.bedroom".into(),
                 service: "turn_on",
                 brightness_pct: Some(40),
             })
@@ -687,7 +703,7 @@ mod tests {
         let fan = wait_for(&mut rx, |u| match u {
             HomeUpdate::States(states) => states
                 .into_iter()
-                .find(|(id, s)| id == "fan.micah" && s.is_on()),
+                .find(|(id, s)| id == "fan.bedroom" && s.is_on()),
             _ => None,
         })
         .await;

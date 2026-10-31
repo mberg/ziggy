@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,12 +13,26 @@ pub enum Domain {
     Script,
 }
 
+/// True for an ID in Home Assistant's form: lowercase letters, digits and `_`, a dot between
+/// the domain and the name, as in `light.desk`.
+pub fn is_entity_id(entity_id: &str) -> bool {
+    let part = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    entity_id
+        .split_once('.')
+        .is_some_and(|(domain, object_id)| part(domain) && part(object_id))
+}
+
 impl Domain {
+    /// The domain of a well-formed entity ID Ziggy can show; None for anything else.
     pub fn of(entity_id: &str) -> Option<Domain> {
-        let (domain, object_id) = entity_id.split_once('.')?;
-        if object_id.is_empty() {
+        if !is_entity_id(entity_id) {
             return None;
         }
+        let (domain, _) = entity_id.split_once('.')?;
         match domain {
             "light" => Some(Domain::Light),
             "switch" => Some(Domain::Switch),
@@ -33,16 +46,6 @@ impl Domain {
     /// Lights, switches and fans are tiles; scenes and scripts are buttons along the bottom.
     pub fn is_tile(self) -> bool {
         matches!(self, Domain::Light | Domain::Switch | Domain::Fan)
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Domain::Light => "light",
-            Domain::Switch => "switch",
-            Domain::Fan => "fan",
-            Domain::Scene => "scene",
-            Domain::Script => "script",
-        }
     }
 }
 
@@ -63,7 +66,7 @@ pub struct Page {
 }
 
 /// What Ziggy needs of an entity's state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EntityState {
     /// "on", "off", "unavailable", …
     pub state: String,
@@ -178,14 +181,6 @@ impl States {
                 .map(|b| b.min(255) as u8),
         })
     }
-
-    /// Every entity's state, to keep for the next start.
-    pub fn snapshot(&self) -> Vec<(String, EntityState)> {
-        self.raw
-            .keys()
-            .filter_map(|id| self.get(id).map(|s| (id.clone(), s)))
-            .collect()
-    }
 }
 
 /// Each entity's area name: its own area, else its device's. Takes the results of
@@ -263,12 +258,18 @@ mod tests {
     fn domains_come_from_the_entity_id() {
         assert_eq!(Domain::of("light.desk"), Some(Domain::Light));
         assert_eq!(Domain::of("switch.fairy_lights"), Some(Domain::Switch));
-        assert_eq!(Domain::of("fan.micah"), Some(Domain::Fan));
+        assert_eq!(Domain::of("fan.bedroom"), Some(Domain::Fan));
         assert_eq!(Domain::of("scene.bedtime"), Some(Domain::Scene));
         assert_eq!(Domain::of("script.reading"), Some(Domain::Script));
         assert_eq!(Domain::of("climate.hall"), None);
         assert_eq!(Domain::of("light"), None);
         assert_eq!(Domain::of("light."), None);
+        assert_eq!(Domain::of("light.desk-lamp"), None);
+        assert_eq!(Domain::of("light.desk lamp"), None);
+        assert_eq!(Domain::of("light.Desk"), None);
+        assert_eq!(Domain::of("Light.desk"), None);
+        assert_eq!(Domain::of("light.desk.lamp"), None);
+        assert!(is_entity_id("climate.hall_2") && !is_entity_id(".desk"));
         assert!(Domain::Fan.is_tile() && !Domain::Scene.is_tile());
     }
 
@@ -336,28 +337,25 @@ mod tests {
             states.apply(&json!({"c": {"light.other": {"+": {"s": "on"}}}, "r": ["light.desk"]}));
         assert!(changed.is_empty());
         assert_eq!(removed, vec!["light.desk".to_string()]);
-        assert!(states.snapshot().is_empty());
+        assert_eq!(states.get("light.desk"), None);
     }
 
     #[test]
     fn areas_come_from_the_entity_or_else_its_device() {
         let entities = json!({"entities": [
-            {"ei": "light.desk", "ai": "micah", "di": "d1"},
+            {"ei": "light.desk", "ai": "bedroom", "di": "d1"},
             {"ei": "light.porch", "di": "d2"},
             {"ei": "light.loose"}
         ]});
         let devices =
             json!([{"id": "d1", "area_id": "kitchen"}, {"id": "d2", "area_id": "outside"}]);
         let areas = json!([
-            {"area_id": "micah", "name": "Micah's room"},
+            {"area_id": "bedroom", "name": "Bedroom"},
             {"area_id": "outside", "name": "Outside"},
             {"area_id": "kitchen", "name": "Kitchen"}
         ]);
         let names = area_names(&entities, &devices, &areas);
-        assert_eq!(
-            names.get("light.desk").map(String::as_str),
-            Some("Micah's room")
-        );
+        assert_eq!(names.get("light.desk").map(String::as_str), Some("Bedroom"));
         assert_eq!(
             names.get("light.porch").map(String::as_str),
             Some("Outside")
