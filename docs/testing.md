@@ -185,6 +185,21 @@ Check:
 - [ ] Changing the song or volume from the Sonos app or a phone shows on the player within a second (events, not polling).
 - [ ] "Play on this player" switches back.
 
+### Home Assistant (at home, with Home Assistant on the same network)
+
+- [ ] With `--fake`, Home shows a pretend house with two pages, and taps change the tiles.
+- [ ] `ziggy config` → Home Assistant offers the address it finds on the network, then saves the address and token. The player restarts.
+- [ ] Home is second in the rail, under Search. The page chips match the pages in the config.
+- [ ] Tapping a light that's off turns it on. On a light that's on, the left part turns it off and the strip on the right opens the brightness bar.
+- [ ] Dragging the bar dims the real light. The bar goes back to the music 8 seconds after the last touch.
+- [ ] Switches and fans toggle on a tap. A scene button runs the scene and stays outlined for 4 seconds.
+- [ ] Changing a light in the Home Assistant app shows on its tile within a second.
+- [ ] A control named in the config (`{ entity = "light.desk", name = "Desk lamp" }`) shows that name.
+- [ ] An entity that isn't in Home Assistant shows a grey "Not in Home Assistant" tile.
+- [ ] Stop Home Assistant: a "Can't reach Home Assistant" banner appears and the tiles grey out. Start it again: the player reconnects by itself.
+- [ ] A wrong token shows "Home Assistant refused Ziggy's sign-in".
+- [ ] A player without `[home_assistant]` in its config shows no Home item.
+
 ### 6. Settings
 
 The gear at the bottom of the left rail opens Settings.

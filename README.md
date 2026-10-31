@@ -71,7 +71,7 @@ Run these from your computer:
 
 | Command | What it does |
 |---|---|
-| `ziggy config ziggy-kitchen.local` | Change settings from a menu: the name, volume, screen timeouts, Audiobookshelf and voice. Saving restarts the player. |
+| `ziggy config ziggy-kitchen.local` | Change settings from a menu: the name, volume, screen timeouts, Audiobookshelf, Home Assistant and voice. Saving restarts the player. |
 | `ziggy update ziggy-kitchen.local` | Install the newest player and restart it. |
 | `ziggy status ziggy-kitchen.local` | Check the player is running, and which version it is. |
 | `ziggy logs ziggy-kitchen.local` | Watch what the player is doing, for when something's wrong. |
@@ -107,6 +107,32 @@ The microphone button in Search does the same without the wake word.
 You can ask to play anything in your library or on Spotify, pause, skip, change the volume, set the sleep timer, heart the song, save its album, or add it to one of your playlists.
 
 To change the wake word or its sensitivity, run `ziggy config`.
+
+## Home Assistant
+
+A player can switch and dim Home Assistant lights, turn switches and fans on and off, and run scenes and scripts. They show on a Home screen, second in the rail. Each player has its own pages of controls.
+
+1. **Make a user for Ziggy.** In Home Assistant, go to Settings → People and add a person called "Ziggy". Turn on "Allow person to login" and leave "Administrator" off.
+2. **Create a token.** Sign in to Home Assistant as that user. Open its profile, then the Security tab, and create a long-lived access token. Copy it; Home Assistant shows it only once.
+3. **Run `ziggy config ziggy-kitchen.local`** and pick Home Assistant. It offers the address it finds on your network, then asks for the token and copies it to the player. Use the local `http://` address, such as `http://192.168.1.69:8123`.
+4. **Add pages** to `/etc/ziggy/config.toml` on the Pi (`ssh ziggy-kitchen.local`, then `sudo nano /etc/ziggy/config.toml`). Each page has a name and a list of controls:
+
+   ```toml
+   [home_assistant]
+   url = "http://192.168.1.69:8123"
+
+   [[home_assistant.page]]
+   name = "Living room"
+   controls = ["light.ceiling", { entity = "light.desk", name = "Desk lamp" }, "switch.fairy_lights", "scene.evening"]
+
+   [[home_assistant.page]]
+   name = "Downstairs"
+   controls = ["light.kitchen", "light.porch", "fan.office", "script.good_night"]
+   ```
+
+   A control is an entity ID, as shown in Home Assistant under Settings → Devices & services → Entities. To show a different name on its tile, write `{ entity = "…", name = "…" }`. Lights, switches and fans become tiles. Scenes and scripts become buttons along the bottom. Then restart the player with `sudo systemctl restart ziggy-player`.
+
+Home stays hidden until the config has at least one page. `ziggy config` and `ziggy setup` keep the pages you've written. The only Home Assistant data the Pi stores is the token; the states of lights and switches come live from Home Assistant.
 
 ## Troubleshooting
 
