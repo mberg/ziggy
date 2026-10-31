@@ -74,8 +74,10 @@ impl EntityState {
         self.state == "on"
     }
 
+    /// "unknown" still counts: a light reports it briefly after Home Assistant restarts, and
+    /// scenes report it until they are run.
     pub fn available(&self) -> bool {
-        !matches!(self.state.as_str(), "unavailable" | "unknown")
+        self.state != "unavailable"
     }
 
     /// Brightness as 1-100.
@@ -104,9 +106,15 @@ impl States {
         if let Some(added) = event.get("a").and_then(Value::as_object) {
             for (id, v) in added {
                 let state = v.get("s").and_then(Value::as_str).unwrap_or("unknown");
-                let attrs = v.get("a").and_then(Value::as_object).cloned().unwrap_or_default();
+                let attrs = v
+                    .get("a")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
                 self.raw.insert(id.clone(), (state.to_string(), attrs));
-                changed.push(id.clone());
+                if !changed.contains(id) {
+                    changed.push(id.clone());
+                }
             }
         }
         if let Some(diffs) = event.get("c").and_then(Value::as_object) {
@@ -124,21 +132,27 @@ impl States {
                         }
                     }
                 }
-                let gone = diff.get("-").and_then(|m| m.get("a")).and_then(Value::as_array);
+                let gone = diff
+                    .get("-")
+                    .and_then(|m| m.get("a"))
+                    .and_then(Value::as_array);
                 for key in gone.into_iter().flatten().filter_map(Value::as_str) {
                     attrs.remove(key);
                 }
-                changed.push(id.clone());
+                if !changed.contains(id) {
+                    changed.push(id.clone());
+                }
             }
         }
         let removed: Vec<String> = event
             .get("r")
             .and_then(Value::as_array)
-            .map(|r| r.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default();
-        for id in &removed {
-            self.raw.remove(id);
-        }
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|id| self.raw.remove(*id).is_some())
+            .map(str::to_string)
+            .collect();
         let changed = changed
             .into_iter()
             .filter_map(|id| self.get(&id).map(|s| (id, s)))
@@ -150,7 +164,10 @@ impl States {
         let (state, attrs) = self.raw.get(id)?;
         Some(EntityState {
             state: state.clone(),
-            name: attrs.get("friendly_name").and_then(Value::as_str).map(str::to_string),
+            name: attrs
+                .get("friendly_name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             brightness: attrs
                 .get("brightness")
                 .and_then(Value::as_u64)
@@ -160,7 +177,10 @@ impl States {
 
     /// Every entity's state, to keep for the next start.
     pub fn snapshot(&self) -> Vec<(String, EntityState)> {
-        self.raw.keys().filter_map(|id| self.get(id).map(|s| (id.clone(), s))).collect()
+        self.raw
+            .keys()
+            .filter_map(|id| self.get(id).map(|s| (id.clone(), s)))
+            .collect()
     }
 }
 
@@ -168,14 +188,26 @@ impl States {
 /// `config/entity_registry/list_for_display`, `config/device_registry/list` and
 /// `config/area_registry/list`; any of them may be `Null` when Ziggy wasn't allowed to read it.
 pub fn area_names(entities: &Value, devices: &Value, areas: &Value) -> HashMap<String, String> {
-    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    fn list(v: &Value) -> &[Value] {
+        v.as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
     let area_name: HashMap<String, String> = list(areas)
         .iter()
-        .filter_map(|a| Some((a["area_id"].as_str()?.to_string(), a["name"].as_str()?.to_string())))
+        .filter_map(|a| {
+            Some((
+                a["area_id"].as_str()?.to_string(),
+                a["name"].as_str()?.to_string(),
+            ))
+        })
         .collect();
     let device_area: HashMap<String, String> = list(devices)
         .iter()
-        .filter_map(|d| Some((d["id"].as_str()?.to_string(), d["area_id"].as_str()?.to_string())))
+        .filter_map(|d| {
+            Some((
+                d["id"].as_str()?.to_string(),
+                d["area_id"].as_str()?.to_string(),
+            ))
+        })
         .collect();
     list(&entities["entities"])
         .iter()
@@ -193,6 +225,7 @@ pub fn area_names(entities: &Value, devices: &Value, areas: &Value) -> HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn domains_come_from_the_entity_id() {
@@ -208,15 +241,17 @@ mod tests {
 
     #[test]
     fn brightness_converts_both_ways() {
-        let on = |b| EntityState { state: "on".into(), name: None, brightness: Some(b) };
+        let on = |b| EntityState {
+            state: "on".into(),
+            name: None,
+            brightness: Some(b),
+        };
         assert_eq!(on(255).percent(), Some(100));
         assert_eq!(on(178).percent(), Some(70));
         assert_eq!(on(1).percent(), Some(1), "a lit light never reads 0%");
         assert_eq!(brightness_of(70), 179);
         assert_eq!(brightness_of(100), 255);
     }
-
-    use serde_json::json;
 
     #[test]
     fn first_event_adds_and_changes_merge() {
@@ -228,14 +263,30 @@ mod tests {
         assert_eq!(changed.len(), 2);
         assert!(removed.is_empty());
         let desk = changed.iter().find(|(id, _)| id == "light.desk").unwrap();
-        assert_eq!(desk.1, EntityState { state: "on".into(), name: Some("Desk lamp".into()), brightness: Some(178) });
+        assert_eq!(
+            desk.1,
+            EntityState {
+                state: "on".into(),
+                name: Some("Desk lamp".into()),
+                brightness: Some(178)
+            }
+        );
 
         // Turning off: the state changes and brightness is taken away.
         let (changed, _) = states.apply(&json!({"c": {
             "light.desk": {"+": {"s": "off"}, "-": {"a": ["brightness"]}}
         }}));
-        assert_eq!(changed, vec![("light.desk".to_string(), EntityState {
-            state: "off".into(), name: Some("Desk lamp".into()), brightness: None })]);
+        assert_eq!(
+            changed,
+            vec![(
+                "light.desk".to_string(),
+                EntityState {
+                    state: "off".into(),
+                    name: Some("Desk lamp".into()),
+                    brightness: None
+                }
+            )]
+        );
 
         // Dimming changes only an attribute.
         let (changed, _) = states.apply(&json!({"c": {
@@ -248,7 +299,8 @@ mod tests {
     fn removed_entities_are_reported_and_unknown_changes_ignored() {
         let mut states = States::default();
         states.apply(&json!({"a": {"light.desk": {"s": "on", "a": {}}}}));
-        let (changed, removed) = states.apply(&json!({"c": {"light.other": {"+": {"s": "on"}}}, "r": ["light.desk"]}));
+        let (changed, removed) =
+            states.apply(&json!({"c": {"light.other": {"+": {"s": "on"}}}, "r": ["light.desk"]}));
         assert!(changed.is_empty());
         assert_eq!(removed, vec!["light.desk".to_string()]);
         assert!(states.snapshot().is_empty());
@@ -261,17 +313,80 @@ mod tests {
             {"ei": "light.porch", "di": "d2"},
             {"ei": "light.loose"}
         ]});
-        let devices = json!([{"id": "d1", "area_id": "kitchen"}, {"id": "d2", "area_id": "outside"}]);
+        let devices =
+            json!([{"id": "d1", "area_id": "kitchen"}, {"id": "d2", "area_id": "outside"}]);
         let areas = json!([
             {"area_id": "micah", "name": "Micah's room"},
             {"area_id": "outside", "name": "Outside"},
             {"area_id": "kitchen", "name": "Kitchen"}
         ]);
         let names = area_names(&entities, &devices, &areas);
-        assert_eq!(names.get("light.desk").map(String::as_str), Some("Micah's room"));
-        assert_eq!(names.get("light.porch").map(String::as_str), Some("Outside"));
+        assert_eq!(
+            names.get("light.desk").map(String::as_str),
+            Some("Micah's room")
+        );
+        assert_eq!(
+            names.get("light.porch").map(String::as_str),
+            Some("Outside")
+        );
         assert_eq!(names.get("light.loose"), None);
         // A registry Ziggy wasn't allowed to read gives no areas, not an error.
         assert!(area_names(&Value::Null, &devices, &areas).is_empty());
+    }
+
+    #[test]
+    fn real_home_assistant_shapes() {
+        let mut states = States::default();
+        let (changed, _) = states.apply(&json!({"a": {"light.master_bedroom": {
+            "s": "on",
+            "a": {
+                "brightness": 181,
+                "friendly_name": "Master Bedroom",
+                "color_mode": "brightness",
+                "supported_color_modes": ["brightness"]
+            },
+            "c": "01K0CONTEXT",
+            "lc": 1793042900.2,
+            "lu": 1793325649.4
+        }}}));
+        let (id, bedroom) = &changed[0];
+        assert_eq!(id, "light.master_bedroom");
+        assert_eq!(bedroom.name.as_deref(), Some("Master Bedroom"));
+        assert_eq!(bedroom.percent(), Some(71));
+
+        let entities = json!({"entities": [
+            {"ei": "light.bay_window", "pl": "hue", "lb": [], "di": "d1", "hn": true}
+        ]});
+        let devices = json!([{"id": "d1", "area_id": "bay_window"}]);
+        let areas = json!([{"area_id": "bay_window", "name": "Bay window"}]);
+        let names = area_names(&entities, &devices, &areas);
+        assert_eq!(
+            names.get("light.bay_window").map(String::as_str),
+            Some("Bay window")
+        );
+    }
+
+    #[test]
+    fn repeated_ids_and_unknown_removals() {
+        let mut states = States::default();
+        let (changed, removed) = states.apply(&json!({
+            "a": {"light.desk": {"s": "on", "a": {}}},
+            "c": {"light.desk": {"+": {"s": "off"}}},
+            "r": ["light.nothing"]
+        }));
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].1.state, "off");
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn unknown_still_counts_as_available() {
+        let state = |s: &str| EntityState {
+            state: s.into(),
+            name: None,
+            brightness: None,
+        };
+        assert!(state("unknown").available());
+        assert!(!state("unavailable").available());
     }
 }
