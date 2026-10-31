@@ -81,8 +81,7 @@ The mockup shows each of these at 800×480 in the Midnight scheme.
   - On: accent fill. Off: surface colour.
   - **Lights are split.** The right third is a strip that shows "Off", or ☀ and the brightness
     ("70%"). It is there in both states so the name never moves. While the light is on, the strip
-    is the bulb's own colour (Home Assistant's `rgb_color`; warm white for bulbs that only dim),
-    darker as it dims, and follows the bar as it's dragged.
+    is amber, darker as the light dims, and follows the bar as it's dragged.
     - Tapping a light that's off, anywhere on it, turns it on.
     - Tapping the left part of a light that's on turns it off.
     - Tapping the strip of a light that's on selects it (outline) and opens the brightness bar.
