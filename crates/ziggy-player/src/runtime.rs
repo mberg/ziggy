@@ -157,6 +157,28 @@ async fn run(
         Some(crate::settings::Output::Sonos(room)) => Some(room.clone()),
         _ => None,
     };
+    // AirPlay plays through this player's own speaker, so not while a Sonos room plays.
+    let airplay_covers = crate::airplay::CoverStore::default();
+    let airplay_available =
+        fake || (cfg!(target_os = "linux") && sonos_room.is_none() && installed("shairport-sync"));
+    let airplay = airplay_available.then(|| {
+        crate::airplay::spawn(
+            if fake {
+                crate::airplay::Backend::Fake
+            } else {
+                crate::airplay::Backend::Real
+            },
+            crate::airplay::AirPlaySettings {
+                name: config.device_name.clone(),
+                output: speaker
+                    .as_ref()
+                    .map(|s| crate::player::soloist::protocol::bluetooth_node(&s.address)),
+                enabled: saved.airplay == Some(true),
+            },
+            airplay_covers.clone(),
+            inputs.clone(),
+        )
+    });
     let (player, library) = if fake {
         let catalog = Arc::new(FakeCatalog::sample());
         let library = spawn_library(
@@ -211,7 +233,11 @@ async fn run(
         (player, library)
     };
     spawn_image_loader(
-        Arc::new(ImageLoader::new(config.images_dir())?.with_books(books_handle.clone())),
+        Arc::new(
+            ImageLoader::new(config.images_dir())?
+                .with_books(books_handle.clone())
+                .with_airplay(airplay_covers),
+        ),
         image_requests,
         images,
     );
@@ -232,6 +258,7 @@ async fn run(
         books_config_url: config.audiobookshelf_url.clone(),
         voice: config.voice_model_dir.is_some(),
         home: home_pages,
+        airplay: airplay_available,
     };
     let history =
         crate::history::spawn_history(config.state_dir.join("history.db"), inputs.clone());
@@ -272,6 +299,7 @@ async fn run(
         history,
         books,
         home,
+        airplay,
         voice_context,
         listen_now,
         bluetooth,
@@ -315,6 +343,8 @@ struct Outputs {
     books: UnboundedSender<crate::app::BooksRequest>,
     /// None when Home Assistant is off.
     home: Option<UnboundedSender<crate::app::HomeRequest>>,
+    /// None when AirPlay can't run here.
+    airplay: Option<UnboundedSender<crate::app::AirPlayCommand>>,
     voice_context: crate::voice::service::SharedContext,
     listen_now: crate::voice::service::ListenNow,
     bluetooth: Option<UnboundedSender<crate::app::BtCommand>>,
@@ -337,6 +367,11 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             Effect::Home(request) => {
                 if let Some(home) = &outputs.home {
                     let _ = home.send(request);
+                }
+            }
+            Effect::AirPlay(command) => {
+                if let Some(airplay) = &outputs.airplay {
+                    let _ = airplay.send(command);
                 }
             }
             Effect::VoiceListen => {
@@ -410,6 +445,12 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             }
         }
     }
+}
+
+/// Whether a program is on the PATH.
+fn installed(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 /// Starts a list at a song on this player through Spotify's Web API: finds the player in the

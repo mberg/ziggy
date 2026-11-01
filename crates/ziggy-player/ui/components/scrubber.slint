@@ -3,6 +3,8 @@ import { Theme } from "../theme.slint";
 // A draggable 0..1 bar. Reports the value once, on release.
 export component Scrubber inherits Rectangle {
     in property <float> value;
+    // Off, the bar only shows the value.
+    in property <bool> enabled: true;
     callback changed(float);
     property <float> drag-value;
     property <float> shown: touch.pressed ? root.drag-value : Math.clamp(root.value, 0, 1);
@@ -32,6 +34,7 @@ export component Scrubber inherits Rectangle {
         background: Theme.text;
     }
     touch := TouchArea {
+        enabled: root.enabled;
         pointer-event(event) => {
             if (event.kind == PointerEventKind.down) {
                 root.drag-value = Math.clamp(self.mouse-x / self.width, 0, 1);

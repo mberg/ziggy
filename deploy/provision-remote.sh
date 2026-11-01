@@ -8,7 +8,11 @@ apt-get install -y --no-install-recommends \
     libasound2t64 libinput10 libudev1 libxkbcommon0 libgbm1 libegl1 libgles2 libdrm2 libfontconfig1 \
     libegl-mesa0 libgl1-mesa-dri \
     bluez pipewire wireplumber libspa-0.2-bluetooth \
+    shairport-sync \
     curl bzip2 ca-certificates
+# AirPlay: the player runs shairport-sync itself when AirPlay is on in Settings. The package's
+# own service would compete with it for the name and the speaker.
+systemctl disable --now shairport-sync.service 2>/dev/null || true
 
 # A player set up before the rename to Ziggy: stop its old service, then rename the service
 # user, its home, the data and the config. Nothing is lost.

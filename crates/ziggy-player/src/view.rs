@@ -582,6 +582,9 @@ pub struct SettingsView {
     pub wifi_weak: bool,
     /// Turn off was confirmed.
     pub powering_off: bool,
+    /// AirPlay can run here, so Settings offers it.
+    pub airplay_available: bool,
+    pub airplay_enabled: bool,
 }
 
 /// Below this, music can stall and the connection can drop.
@@ -621,6 +624,8 @@ pub struct NowView {
     pub volume: u8,
     pub shuffle: bool,
     pub repeat: Repeat,
+    /// A phone or computer plays here over AirPlay: no seeking, shuffle or repeat.
+    pub airplay: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -710,7 +715,8 @@ pub fn build(state: &AppState) -> View {
         .map(|items| items.iter().map(tile).collect())
         .unwrap_or_default();
     let pb = &state.playback;
-    let has_playback = pb.track.is_some() || pb.context_uri.is_some();
+    let has_playback =
+        pb.track.is_some() || pb.context_uri.is_some() || state.airplay.session.is_some();
     let keyboard = state.keyboard_open || state.text_entry.is_some();
 
     View {
@@ -903,6 +909,8 @@ fn settings(state: &AppState) -> SettingsView {
             }) => format!("Wi-Fi {network} · {band} · {signal}%"),
         },
         powering_off: d.powering_off,
+        airplay_available: state.airplay.available,
+        airplay_enabled: state.airplay.enabled,
         wifi_weak: match &d.wifi {
             None => false,
             Some(crate::app::WifiStatus::Disconnected) => true,
@@ -1245,6 +1253,44 @@ fn track_summary(tracks: &[Track]) -> String {
 }
 
 fn now(state: &AppState) -> NowView {
+    // The core's clock isn't in state, so the view counts from the last tick it saw.
+    let sleep_left = match state.sleep_ends_ms {
+        Some(ends) => format!("{} min", ends.saturating_sub(state.now_ms).div_ceil(60_000)),
+        None => String::new(),
+    };
+    if let Some(s) = &state.airplay.session {
+        return NowView {
+            track_uri: String::new(),
+            has_artist: false,
+            sleep_left,
+            liked: false,
+            title: if s.title.is_empty() {
+                "AirPlay".into()
+            } else {
+                s.title.clone()
+            },
+            artists: s.artist.clone(),
+            image_url: s.cover_url.clone(),
+            playing: s.playing,
+            loading: false,
+            progress: if s.duration_ms > 0 {
+                (s.position_ms as f32 / s.duration_ms as f32).min(1.0)
+            } else {
+                0.0
+            },
+            position: fmt_ms(s.position_ms),
+            // A stream with no end, like the radio, shows no length.
+            duration: if s.duration_ms > 0 {
+                fmt_ms(s.duration_ms)
+            } else {
+                String::new()
+            },
+            volume: state.airplay.volume,
+            shuffle: false,
+            repeat: Repeat::Off,
+            airplay: true,
+        };
+    }
     let pb = &state.playback;
     let (title, artists, image_url) = match &pb.track {
         Some(t) => (t.name.clone(), t.artists.clone(), t.image_url.clone()),
@@ -1266,11 +1312,7 @@ fn now(state: &AppState) -> NowView {
     NowView {
         track_uri: pb.track.as_ref().map(|t| t.uri.clone()).unwrap_or_default(),
         has_artist: pb.track.as_ref().is_some_and(|t| t.artist_uri.is_some()),
-        sleep_left: match state.sleep_ends_ms {
-            // The core's clock isn't in state, so the view counts from the last tick it saw.
-            Some(ends) => format!("{} min", ends.saturating_sub(state.now_ms).div_ceil(60_000)),
-            None => String::new(),
-        },
+        sleep_left,
         liked: pb
             .track
             .as_ref()
@@ -1288,6 +1330,7 @@ fn now(state: &AppState) -> NowView {
         volume: pb.volume,
         shuffle: pb.shuffle,
         repeat: pb.repeat,
+        airplay: false,
     }
 }
 

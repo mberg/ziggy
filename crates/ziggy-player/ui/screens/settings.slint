@@ -162,6 +162,9 @@ export component SettingsScreen inherits Rectangle {
     in property <string> books-user;
     in property <string> books-message;
     callback set-books-enabled(bool);
+    in property <bool> airplay-available;
+    in property <bool> airplay-enabled;
+    callback set-airplay(bool);
     callback edit-books-server();
     callback books-sign-in();
     callback books-sign-out();
@@ -330,6 +333,31 @@ export component SettingsScreen inherits Rectangle {
                 }
                 Text {
                     text: "Rejoins the Wi-Fi and Spotify. Try it if music or the library stops loading.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
+                }
+            }
+            if root.airplay-available: Card {
+                title: "AirPlay";
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    SmallPill {
+                        label: "On";
+                        primary: root.airplay-enabled;
+                        clicked => { root.set-airplay(true); }
+                    }
+                    SmallPill {
+                        label: "Off";
+                        primary: !root.airplay-enabled;
+                        clicked => { root.set-airplay(false); }
+                    }
+                }
+                Text {
+                    text: root.airplay-enabled
+                        ? "Play from an iPhone, iPad or Mac: pick " + root.device-name + " under AirPlay. Playing something here from Spotify ends AirPlay."
+                        : "Lets an iPhone, iPad or Mac on the same Wi-Fi play here.";
                     color: Theme.text-dim;
                     font-size: Theme.font-small;
                     wrap: word-wrap;

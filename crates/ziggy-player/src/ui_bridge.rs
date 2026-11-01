@@ -301,6 +301,8 @@ pub fn wire_callbacks(window: &AppWindow, inputs: UnboundedSender<Input>) {
     let s = send.clone();
     window.on_set_books_enabled(move |b| s(UiAction::SetBooksEnabled(b)));
     let s = send.clone();
+    window.on_set_airplay(move |b| s(UiAction::SetAirPlay(b)));
+    let s = send.clone();
     window.on_edit_books_server(move || s(UiAction::EditBooksServer));
     let s = send.clone();
     window.on_books_sign_in(move || s(UiAction::BooksSignIn));
@@ -420,6 +422,7 @@ impl Bridge {
         w.set_volume(v.now.volume as i32);
         w.set_shuffle(v.now.shuffle);
         w.set_repeat(v.now.repeat.index());
+        w.set_now_airplay(v.now.airplay);
         w.set_banner_at_bottom(v.banner_at_bottom);
         w.set_banner(v.banner.unwrap_or_default().into());
         w.set_voice_status(v.voice_status.as_str().into());
@@ -512,6 +515,8 @@ impl Bridge {
         w.set_books_url(s.books_url.as_str().into());
         w.set_books_user(s.books_user.as_str().into());
         w.set_books_settings_message(s.books_message.as_str().into());
+        w.set_airplay_available(s.airplay_available);
+        w.set_airplay_enabled(s.airplay_enabled);
         w.set_recent_songs(v.recent_songs);
         if v.recent_songs && v.recent_chips {
             let now = chrono::Local::now();

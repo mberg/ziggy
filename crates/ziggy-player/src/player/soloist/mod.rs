@@ -604,13 +604,13 @@ fn soloist(bin: &Path, settings: &SoloistSettings, key: &str) -> Command {
 }
 
 #[cfg(unix)]
-fn own_uid() -> Option<u32> {
+pub(crate) fn own_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self").ok().map(|m| m.uid())
 }
 
 #[cfg(not(unix))]
-fn own_uid() -> Option<u32> {
+pub(crate) fn own_uid() -> Option<u32> {
     None
 }
 
@@ -635,7 +635,7 @@ async fn spotify_playing() -> bool {
 
 /// The PipeWire node for the Pi's headphone jack, e.g.
 /// `alsa_output.platform-3f00b840.mailbox.stereo-fallback` on a Pi 3.
-async fn jack_node() -> Option<String> {
+pub(crate) async fn jack_node() -> Option<String> {
     protocol::jack_node(&pw_dump().await?)
 }
 
