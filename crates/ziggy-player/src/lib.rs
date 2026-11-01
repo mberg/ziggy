@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+pub mod airplay;
 pub mod app;
 pub mod audiobooks;
 pub mod bluetooth;

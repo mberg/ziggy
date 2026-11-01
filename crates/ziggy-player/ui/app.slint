@@ -183,6 +183,10 @@ export component AppWindow inherits Window {
     callback set-recent-songs(bool);
     callback open-book(string);
     callback set-books-enabled(bool);
+    in property <bool> airplay-available;
+    in property <bool> airplay-enabled;
+    in property <bool> now-airplay;
+    callback set-airplay(bool);
     callback edit-books-server();
     callback books-sign-in();
     callback books-sign-out();
@@ -393,6 +397,9 @@ export component AppWindow inherits Window {
         books-user: root.books-user;
         books-message: root.books-settings-message;
         set-books-enabled(b) => { root.set-books-enabled(b); }
+        airplay-available: root.airplay-available;
+        airplay-enabled: root.airplay-enabled;
+        set-airplay(b) => { root.set-airplay(b); }
         edit-books-server => { root.edit-books-server(); }
         books-sign-in => { root.books-sign-in(); }
         books-sign-out => { root.books-sign-out(); }
@@ -459,6 +466,7 @@ export component AppWindow inherits Window {
         volume: root.volume;
         shuffle: root.shuffle;
         repeat: root.repeat;
+        airplay: root.now-airplay;
         back => { root.back(); }
         toggle-play => { root.toggle-play(); }
         next => { root.next(); }

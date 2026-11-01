@@ -15,6 +15,8 @@ export component NowPlayingScreen inherits Rectangle {
     in property <int> volume;
     in property <bool> shuffle;
     in property <int> repeat;
+    // A phone or computer plays over AirPlay: its buttons work, seeking, shuffle and repeat don't.
+    in property <bool> airplay;
     callback back();
     callback toggle-play();
     callback next();
@@ -73,6 +75,23 @@ export component NowPlayingScreen inherits Rectangle {
         VerticalLayout {
             spacing: 14px;
             alignment: center;
+            if root.airplay: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Image {
+                    source: @image-url("../icons/airplay.svg");
+                    width: 22px;
+                    height: 22px;
+                    colorize: Theme.accent;
+                }
+                Text {
+                    text: "AirPlay";
+                    color: Theme.accent;
+                    font-size: Theme.font-small;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+            }
             // At most two lines: a long title ends in "…" rather than pushing the volume off the
             // screen. A layout gives a wrapped Text all the lines it needs, whatever its
             // max-height, so the frame sets the height.
@@ -126,6 +145,7 @@ export component NowPlayingScreen inherits Rectangle {
             }
             Scrubber {
                 value: root.progress;
+                enabled: !root.airplay;
                 changed(v) => { root.seek(v); }
             }
             HorizontalLayout {
@@ -135,7 +155,9 @@ export component NowPlayingScreen inherits Rectangle {
             }
             HorizontalLayout {
                 alignment: space-between;
+                // Hidden, not removed, so the play buttons stay where they are.
                 IconButton {
+                    visible: !root.airplay;
                     icon: @image-url("../icons/shuffle.svg");
                     active: root.shuffle;
                     clicked => { root.toggle-shuffle(); }
@@ -159,6 +181,7 @@ export component NowPlayingScreen inherits Rectangle {
                 Rectangle {
                     width: Theme.touch;
                     height: Theme.touch;
+                    visible: !root.airplay;
                     IconButton {
                         icon: @image-url("../icons/repeat.svg");
                         active: root.repeat != 0;

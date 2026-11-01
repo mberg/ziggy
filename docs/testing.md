@@ -205,6 +205,21 @@ Check:
 - [ ] A wrong token shows "Home Assistant refused Ziggy's sign-in".
 - [ ] A player without `[home_assistant]` in its config shows no Home item.
 
+### AirPlay (on a Pi, with an iPhone or Mac on the same Wi-Fi)
+
+- [ ] With `--fake`, turning on Settings → AirPlay starts a pretend phone after 8 seconds, with a coloured cover. Its buttons work, and playing anything from the library ends it.
+- [ ] On a Pi, the AirPlay card shows after `ziggy update`. It's off at first, and the player's name doesn't show in the iPhone's AirPlay list.
+- [ ] Turn it on: within a few seconds the name shows in Control Centre → AirPlay. No restart is needed.
+- [ ] Play to it while Spotify plays: Spotify pauses, Now Playing opens with "AirPlay", and the song, artist, cover and time come from the phone. The sound comes from the player's speaker.
+- [ ] Pause, play, next, previous and the volume slider on the player change the phone. Changing the volume on the phone moves the player's slider. Shuffle and repeat are hidden, and the bar can't be dragged.
+- [ ] Go back and open Home or a playlist: the bottom bar shows the AirPlay song. Home controls work.
+- [ ] Tap a song: AirPlay ends on the phone, and Spotify plays.
+- [ ] Start AirPlay again, then pick the player in the Spotify app: AirPlay ends and Spotify plays.
+- [ ] Stop AirPlay on the phone: about 10 seconds later Now Playing shows the paused Spotify song. A Bluetooth speaker can go to sleep (`pw-dump` shows no `airplay` stream).
+- [ ] Set the sleep timer during AirPlay: the phone pauses when it ends.
+- [ ] Turn AirPlay off: the name leaves the AirPlay list.
+- [ ] With a Sonos room as the speaker, Settings doesn't offer AirPlay.
+
 ### 6. Settings
 
 The gear at the bottom of the left rail opens Settings.

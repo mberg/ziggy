@@ -17,6 +17,8 @@ pub struct ImageLoader {
     dir: PathBuf,
     /// Audiobookshelf covers ("abs-cover:<item id>") need the signed-in client.
     books: Option<crate::audiobooks::service::AbsHandle>,
+    /// AirPlay covers ("airplay-cover:…") come from the phone and are only kept in memory.
+    airplay: Option<crate::airplay::CoverStore>,
 }
 
 /// The image URL for an Audiobookshelf book's cover.
@@ -73,11 +75,17 @@ impl ImageLoader {
             client,
             dir,
             books: None,
+            airplay: None,
         })
     }
 
     pub fn with_books(mut self, books: crate::audiobooks::service::AbsHandle) -> Self {
         self.books = Some(books);
+        self
+    }
+
+    pub fn with_airplay(mut self, covers: crate::airplay::CoverStore) -> Self {
+        self.airplay = Some(covers);
         self
     }
 
@@ -108,6 +116,14 @@ impl ImageLoader {
     /// file on disk.
     pub async fn load(&self, request: &str) -> anyhow::Result<RgbaImage> {
         let (url, max_px) = sized(request);
+        if url.starts_with(crate::airplay::COVER) {
+            let bytes = self
+                .airplay
+                .as_ref()
+                .and_then(|covers| crate::airplay::cover(covers, url))
+                .ok_or_else(|| anyhow::anyhow!("that AirPlay cover has gone"))?;
+            return tokio::task::spawn_blocking(move || decode(&bytes, max_px)).await?;
+        }
         let path = self.dir.join(cache_file_name(url));
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,

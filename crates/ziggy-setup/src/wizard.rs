@@ -785,6 +785,7 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
     install::keep_logs(&ssh)?;
     install::allow_player_commands(&ssh)?;
     install::watch_wifi(&ssh)?;
+    install::install_airplay(&ssh)?;
     install::install_service(&ssh)?;
     say("Installing the player…");
     install::install_player(&ssh, &player)?;

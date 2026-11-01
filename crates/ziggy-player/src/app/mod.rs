@@ -1,3 +1,4 @@
+mod airplay;
 mod home;
 pub mod input;
 pub mod state;
@@ -73,6 +74,8 @@ pub struct CoreConfig {
     pub voice: bool,
     /// Home Assistant pages; none turns Home off.
     pub home: Vec<crate::home::types::Page>,
+    /// The AirPlay receiver can run here.
+    pub airplay: bool,
 }
 
 impl CoreConfig {
@@ -210,6 +213,12 @@ impl Core {
                 pages: cfg.home.clone(),
                 ..Default::default()
             },
+            airplay: AirPlayState {
+                available: cfg.airplay,
+                enabled: cfg.airplay && cfg.saved.airplay == Some(true),
+                volume: cfg.initial_volume,
+                session: None,
+            },
         };
         let mut core = Core {
             state,
@@ -275,6 +284,7 @@ impl Core {
             Input::Temperature(c) => self.state.device.temperature_c = c,
             Input::Wifi(wifi) => self.on_wifi(wifi, now_ms, &mut fx),
             Input::PairingNeeded(needed) => self.state.pairing_needed = needed,
+            Input::AirPlay(update) => self.on_airplay(update, now_ms, &mut fx),
             Input::SonosRooms(rooms) => {
                 self.state.device.sonos_rooms = rooms;
                 self.state.device.sonos_scanning = false;
@@ -1060,6 +1070,9 @@ impl Core {
     }
 
     fn on_ui(&mut self, action: UiAction, now_ms: u64, fx: &mut Vec<Effect>) {
+        if self.airplay_ui(&action, now_ms, fx) {
+            return;
+        }
         match action {
             UiAction::ShowSection(Section::Books) => {
                 self.state.section = Section::Books;
@@ -1243,6 +1256,7 @@ impl Core {
                     .loading = true;
                 fx.push(Effect::Books(BooksRequest::Detail(id)));
             }
+            UiAction::SetAirPlay(enabled) => self.set_airplay(enabled, fx),
             UiAction::SetBooksEnabled(enabled) => {
                 self.state.books.enabled = enabled;
                 self.save_books_settings(fx);
@@ -1468,6 +1482,7 @@ impl Core {
             UiAction::PowerOff => {
                 if !self.state.device.powering_off {
                     self.state.device.powering_off = true;
+                    self.end_airplay(fx);
                     fx.push(Effect::Player(PlayerCommand::Pause));
                     fx.push(Effect::PowerOff);
                 }
@@ -1559,6 +1574,7 @@ impl Core {
             }
             PlayerUpdate::Loading => self.state.playback.status = PlayStatus::Loading,
             PlayerUpdate::Playing { position_ms } => {
+                self.spotify_took_over(now_ms, fx);
                 self.count_listening(now_ms);
                 self.state.playback.status = PlayStatus::Playing;
                 self.state.playback.position_ms = position_ms;
@@ -1724,6 +1740,18 @@ impl Core {
             return;
         };
         let left = ends.saturating_sub(now_ms);
+        // AirPlay pauses at the end, without a fade: the volume is the phone's.
+        if let Some(s) = &mut self.state.airplay.session {
+            if left == 0 {
+                if s.playing {
+                    s.playing = false;
+                    fx.push(Effect::AirPlay(AirPlayCommand::Pause));
+                }
+                self.state.sleep_ends_ms = None;
+                self.restore_sleep_volume(fx);
+            }
+            return;
+        }
         let pb = &mut self.state.playback;
         if left == 0 {
             if matches!(pb.status, PlayStatus::Playing | PlayStatus::Loading) {
@@ -1746,6 +1774,7 @@ impl Core {
         if self.state.notice.is_some() && now_ms >= self.notice_until_ms {
             self.state.notice = None;
         }
+        self.airplay_tick(now_ms);
         self.on_sleep_tick(now_ms, fx);
         self.voice_tick(now_ms, fx);
         self.home_tick(now_ms);
@@ -1762,7 +1791,7 @@ impl Core {
             self.retry_offline(now_ms, fx);
         }
         // Music keeps the screen awake, except while falling asleep to it.
-        if self.state.playback.status == PlayStatus::Playing && self.state.sleep_ends_ms.is_none() {
+        if self.play_status() == PlayStatus::Playing && self.state.sleep_ends_ms.is_none() {
             self.last_activity_ms = now_ms;
         }
         let idle = now_ms.saturating_sub(self.last_activity_ms);
@@ -1951,6 +1980,8 @@ impl Core {
             }
         }
         self.last_load = Some((key, now_ms));
+        // Spotify gets the speaker back.
+        self.end_airplay(fx);
         if !self.state.online {
             self.notify(Notice::NoInternet, now_ms);
         }

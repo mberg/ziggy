@@ -136,6 +136,14 @@ Home stays hidden until the config has at least one page. `ziggy config` and `zi
 
 With voice control on, the same controls answer to voice: "ziggy, turn off the mud room", "ziggy, dim MR to 30", "ziggy, bedroom nightlight". Voice reaches only the controls on that player's pages.
 
+## AirPlay
+
+A player can also be an AirPlay speaker, for an iPhone, iPad or Mac on the same Wi-Fi. Turn it on in Settings → AirPlay. It shows up in the AirPlay list under the player's name, and plays through the player's own speaker. It doesn't play to a Sonos room.
+
+While something plays over AirPlay, Now Playing shows its song, cover and progress, marked "AirPlay". Play, pause, skip and volume control the phone; seeking, shuffle and repeat don't apply. Spotify pauses when AirPlay starts. You can still browse, and Home still works. Playing anything from Spotify on the player, or picking the player in a Spotify app, ends AirPlay. The sleep timer pauses AirPlay too.
+
+`ziggy setup` and `ziggy update` install shairport-sync, the AirPlay receiver. It's AirPlay 1, which every iPhone and Mac can play to. It doesn't group with other AirPlay 2 speakers. Nothing is saved on the SD card: the receiver's settings and covers are kept in memory.
+
 ## Troubleshooting
 
 - **Setup can't connect to the Pi.** Check that `ssh ziggy-kitchen.local` works. The hostname and SSH key must match what you set in Imager. If your username on the Pi differs from your computer's, use `pi@ziggy-kitchen.local`.

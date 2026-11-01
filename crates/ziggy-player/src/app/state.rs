@@ -303,6 +303,34 @@ pub struct TextEntry {
     pub text: String,
 }
 
+/// The AirPlay receiver and whatever is playing to it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AirPlayState {
+    /// The receiver can run on this player (shairport-sync is installed).
+    pub available: bool,
+    /// The receiver is turned on in Settings.
+    pub enabled: bool,
+    /// The phone's volume slider, 0-100.
+    pub volume: u8,
+    /// A phone or computer playing here; while there is one, Now Playing shows it.
+    pub session: Option<AirPlaySession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AirPlaySession {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub cover_url: Option<String>,
+    pub playing: bool,
+    pub position_ms: u32,
+    /// 0 when the length isn't known, as for a radio stream.
+    pub duration_ms: u32,
+    /// When `position_ms` was last right, so it moves on while playing.
+    pub position_at_ms: u64,
+    pub started_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayMode {
     Active,
@@ -348,6 +376,7 @@ pub struct AppState {
     pub device: DeviceSettings,
     pub books: BooksState,
     pub home: HomeState,
+    pub airplay: AirPlayState,
     pub voice: VoiceState,
     /// Artists opened from a song, so their page has a name before it loads elsewhere.
     pub artists_seen: HashMap<String, Collection>,

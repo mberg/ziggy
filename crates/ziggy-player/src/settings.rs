@@ -49,6 +49,9 @@ pub struct Settings {
     /// Audiobooks from an Audiobookshelf server; the config file's address when unset.
     #[serde(default)]
     pub audiobooks: Option<AudiobooksSettings>,
+    /// The player shows up as an AirPlay speaker; off when unset.
+    #[serde(default)]
+    pub airplay: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -114,6 +117,7 @@ mod tests {
             sleep_minutes: Some(60),
             theme: Some(2),
             audiobooks: None,
+            airplay: Some(true),
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(Settings::load(dir.path()), settings);
@@ -131,6 +135,7 @@ mod tests {
             sleep_minutes: None,
             theme: None,
             audiobooks: None,
+            airplay: None,
         }
         .apply(&mut config);
         assert_eq!(config.device_name, "Kitchen");
@@ -150,6 +155,7 @@ mod tests {
             sleep_minutes: None,
             theme: None,
             audiobooks: None,
+            airplay: None,
         }
         .apply(&mut config);
         assert_eq!(config.bluetooth_speaker, None);

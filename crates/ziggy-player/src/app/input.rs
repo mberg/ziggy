@@ -33,6 +33,7 @@ pub enum Input {
     Wifi(Option<WifiStatus>),
     /// The player isn't signed in to Spotify: it waits to be picked in a Spotify app.
     PairingNeeded(bool),
+    AirPlay(AirPlayUpdate),
 }
 
 /// The Wi-Fi connection, as Settings shows it.
@@ -317,6 +318,8 @@ pub enum UiAction {
     OpenBook(String),
     /// Settings: turn Books on or off.
     SetBooksEnabled(bool),
+    /// Settings: this player shows up as an AirPlay speaker, or not.
+    SetAirPlay(bool),
     /// Settings: type the Audiobookshelf server address.
     EditBooksServer,
     /// Settings: sign in to Audiobookshelf (asks for username, then password).
@@ -381,6 +384,49 @@ pub enum UiAction {
     HomeBrightnessDone(u8),
     HomeBarToggle,
     HomeBarClose,
+}
+
+/// What the AirPlay receiver reports about a phone or computer playing to this player.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AirPlayUpdate {
+    /// Something started playing here.
+    Started,
+    /// The song's details; any of them may be empty.
+    Song {
+        title: String,
+        artist: String,
+        album: String,
+    },
+    /// The cover to request from the image loader, or none.
+    Cover(Option<String>),
+    Playing,
+    Paused,
+    Progress {
+        position_ms: u32,
+        duration_ms: u32,
+    },
+    /// The phone's volume slider, 0-100.
+    Volume {
+        percent: u8,
+    },
+    /// The phone or computer has gone.
+    Ended,
+}
+
+/// What Ziggy asks of the phone or computer playing here, through the AirPlay receiver.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AirPlayCommand {
+    /// Turns the receiver on or off.
+    Enable(bool),
+    Play,
+    Pause,
+    Next,
+    Previous,
+    SetVolume {
+        percent: u8,
+    },
+    /// Ends the session, so the speaker is free for Spotify.
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -496,6 +542,7 @@ pub enum Effect {
     PowerOff,
     /// Rejoin the Wi-Fi, then restart the player so Spotify connects afresh.
     Reconnect,
+    AirPlay(AirPlayCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -386,6 +386,16 @@ fn ui_clicks() {
             bottom <= 480.0,
             "the volume row should be on screen, ends at y={bottom}"
         );
+        // AirPlay adds its label above the title; the volume row still fits.
+        window.set_now_airplay(true);
+        slint::platform::update_timers_and_animations();
+        let sleep = visible_by_label(&window, "Sleep timer");
+        let bottom = sleep.absolute_position().y + sleep.size().height;
+        assert!(
+            bottom <= 480.0,
+            "with AirPlay the volume row should be on screen, ends at y={bottom}"
+        );
+        window.set_now_airplay(false);
         window.set_track_title("".into());
         window.set_track_artists("".into());
         window.set_screen(ScreenKind::Grid);

@@ -17,12 +17,16 @@ impl Core {
             VoiceUpdate::Woke => {
                 self.wake(now_ms, fx);
                 self.set_voice_phase(VoicePhase::Listening, now_ms);
-                let pb = &self.state.playback;
-                if self.state.voice.ducked_from.is_none() && pb.status == PlayStatus::Playing {
-                    let volume = pb.volume;
+                if self.state.voice.ducked_from.is_none()
+                    && self.play_status() == PlayStatus::Playing
+                {
+                    let volume = self.volume();
                     self.state.voice.ducked_from = Some(volume);
-                    let quiet = (u16::from(volume) * u16::from(DUCK_PERCENT) / 100) as u8;
-                    fx.push(Effect::Player(PlayerCommand::SetVolume { percent: quiet }));
+                    let percent = (u16::from(volume) * u16::from(DUCK_PERCENT) / 100) as u8;
+                    fx.push(match self.state.airplay.session {
+                        Some(_) => Effect::AirPlay(AirPlayCommand::SetVolume { percent }),
+                        None => Effect::Player(PlayerCommand::SetVolume { percent }),
+                    });
                 }
                 fx.push(Effect::VoiceContext(self.voice_context()));
             }
@@ -67,11 +71,7 @@ impl Core {
 
     fn run_voice_command(&mut self, command: VoiceCommand, now_ms: u64, fx: &mut Vec<Effect>) {
         // Volume changes start from the volume before the music was lowered.
-        let volume = self
-            .state
-            .voice
-            .ducked_from
-            .unwrap_or(self.state.playback.volume);
+        let volume = self.state.voice.ducked_from.unwrap_or(self.volume());
         match command {
             VoiceCommand::Louder => {
                 self.state.voice.ducked_from = None;
@@ -92,7 +92,7 @@ impl Core {
             }
             _ => self.end_voice(now_ms, fx),
         }
-        let status = self.state.playback.status;
+        let status = self.play_status();
         match command {
             VoiceCommand::Play(uri) => {
                 let Some(item) = self

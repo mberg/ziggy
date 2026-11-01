@@ -209,6 +209,21 @@ pub fn keep_logs(r: &dyn Remote) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// AirPlay: installs shairport-sync for a player set up before AirPlay. The player runs it
+/// itself when AirPlay is on in Settings, so the package's own service stays off. Safe to run
+/// again; the provisioning script does the same.
+pub fn install_airplay(r: &dyn Remote) -> anyhow::Result<()> {
+    r.run(
+        "if ! command -v shairport-sync >/dev/null; then\n\
+           sudo apt-get update -qq\n\
+           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+             shairport-sync >/dev/null\n\
+         fi\n\
+         sudo systemctl disable --now shairport-sync.service 2>/dev/null || true",
+    )?;
+    Ok(())
+}
+
 /// What the player's service user may run through sudo, and nothing else: shutting the Pi down
 /// (Turn off) and rejoining the Wi-Fi (Reconnect), both from Settings.
 pub const PLAYER_SUDOERS: &str = "# Ziggy: the Turn off and Reconnect buttons in Settings.\n\
@@ -413,6 +428,22 @@ pub fn installed_version(r: &dyn Remote) -> Option<String> {
 mod tests {
     use super::*;
     use crate::remote::fake::FakeRemote;
+
+    #[test]
+    fn airplay_installs_only_when_missing_and_its_own_service_stays_off() {
+        let r = FakeRemote::default();
+        install_airplay(&r).unwrap();
+        let scripts = r.all_scripts();
+        assert!(
+            scripts.contains("if ! command -v shairport-sync"),
+            "{scripts}"
+        );
+        assert!(
+            scripts.contains("--no-install-recommends shairport-sync"),
+            "{scripts}"
+        );
+        assert!(scripts.contains("systemctl disable --now shairport-sync.service"));
+    }
 
     #[test]
     fn provisioning_uploads_the_scripts_and_reports_a_needed_reboot() {
