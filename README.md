@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/img/ziggy-logo.svg">
+    <img src="docs/ziggy-logo-light.svg" alt="Ziggy" width="180">
+  </picture>
+</p>
+
 # Ziggy Player
 
 A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotify playlists, albums and liked songs, and music files kept on its SD card. It does nothing else: no apps, no feeds, no ads.

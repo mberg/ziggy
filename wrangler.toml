@@ -1,0 +1,12 @@
+# Publishes site/ to Cloudflare, served at ziggy.bergworks.org.
+#
+#     npx wrangler deploy
+name = "ziggy-site"
+compatibility_date = "2026-11-01"
+workers_dev = false
+preview_urls = false
+routes = [{ pattern = "ziggy.bergworks.org", custom_domain = true }]
+
+[assets]
+directory = "site"
+not_found_handling = "404-page"
