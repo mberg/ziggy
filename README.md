@@ -4,13 +4,23 @@ A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotif
 
 - **Spotify:** your library, search, playlist editing and hearting songs, with recently played kept on the player.
 - **Speakers:** the headphone jack, a Bluetooth speaker, or a Sonos room.
+- **AirPlay:** the player can be an AirPlay speaker for an iPhone, iPad or Mac.
 - **Audiobooks:** browse an [Audiobookshelf](https://www.audiobookshelf.org/) server at home.
+- **Home Assistant:** switch and dim lights, turn switches and fans on and off, and run scenes from a Home screen.
 - **Voice control:** say "ziggy, play Road Trip", "ziggy, heart this" or, with Home Assistant, "ziggy, turn off the lights". Voice is optional and needs a USB microphone.
 - **Bedtime:** a sleep timer that fades the music out, and a screen that dims and turns itself off.
 
+| | |
+|---|---|
+| ![Now Playing](docs/screenshots/now-playing.png) | ![Playlists](docs/screenshots/playlists.png) |
+| ![Home Assistant controls](docs/screenshots/home.png) | ![A playlist](docs/screenshots/playlist.png) |
+
+The screenshots use a made-up library. To make them again, run `cargo run -p ziggy-player --example screenshots -- docs/screenshots`.
+
 ## What you need
 
-- A Raspberry Pi 3 A+ or newer, with the official 7" touchscreen, a power supply and a microSD card (8 GB or more).
+- A Raspberry Pi 3 A+ or newer, a power supply and a microSD card (16 GB is plenty; 8 GB is the least).
+- A 7" DSI touchscreen: the official Raspberry Pi one, or one like Hosyond's 7" DSI display, which carries the Pi on its back.
 - Speakers or headphones: the Pi's headphone jack, a Bluetooth speaker, or a Sonos system.
 - A Spotify Premium account for each person.
 - A Mac or Linux computer to run setup from, on the same Wi-Fi as the Pi.
@@ -62,8 +72,12 @@ When setup finishes, the player is on the screen.
 ### 4. On the touchscreen
 
 - **Settings → Speaker** pairs a Bluetooth speaker or picks a Sonos room. Put a Bluetooth speaker in pairing mode first.
+- **Settings → AirPlay** turns the AirPlay speaker on or off. See [AirPlay](#airplay).
 - **Settings → Audiobooks** signs in to Audiobookshelf. Each player can use its own Audiobookshelf user.
 - **Settings → Colours** and **Sleep timer** take effect at once.
+- The top of **Settings** shows the Wi-Fi network, its signal and the Pi's temperature.
+- **Settings → Connection → Reconnect** rejoins the Wi-Fi and Spotify, for when music or the library stops loading.
+- **Settings → Power → Turn off** shuts the Pi down safely before you unplug it.
 
 ## Looking after a player
 
@@ -89,6 +103,8 @@ Setup trims the boot:
 - there's no splash screen or boot delay, and no console login;
 - background package jobs are off;
 - **the player doesn't wait for Wi-Fi.** It shows your saved library straight away and connects to Spotify once the network is up.
+
+If the Wi-Fi drops and stays down for 3 minutes, the player rejoins it by itself and reloads the library once it's back. After a power cut it keeps trying the saved Spotify sign-in until Spotify answers.
 
 ## Voice control
 
@@ -150,6 +166,7 @@ While something plays over AirPlay, Now Playing shows its song, cover and progre
 - **Setup says sudo asks for a password.** Newer Raspberry Pi OS images do this for the Imager user. Run the one-line command setup prints, which asks for the Pi's password once, then continue.
 - **Spotify says it's limiting requests.** Spotify sometimes rate-limits a developer app for up to a day. Setup saves the sign-in and carries on. The library loads once the limit ends, and playing music isn't affected.
 - **Spotify says some requests were refused.** Add the account's email under "User Management" in the Spotify developer app, then run `ziggy signin`.
+- **Music or the library stops loading.** Tap Settings → Connection → Reconnect.
 - **The screen is blank.** Run `ziggy status`, then `ziggy logs` to see why.
 
 ## For developers

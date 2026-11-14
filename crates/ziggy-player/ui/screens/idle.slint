@@ -1,6 +1,5 @@
-import { Theme } from "../theme.slint";
 
-// mode 0 = awake (nothing shown), 1 = dim (clock), 2 = off (black). Any tap wakes.
+// mode 0 = awake (nothing shown), 1 = dim (logo and clock on black), 2 = off (black). Any tap wakes.
 // Dimming and going dark fade over 5 seconds; waking is instant.
 export component IdleOverlay inherits Rectangle {
     in property <int> mode;
@@ -8,16 +7,34 @@ export component IdleOverlay inherits Rectangle {
     // No clock while falling asleep to a sleep timer: just dim, then dark.
     in property <bool> show-clock: true;
     callback touched();
-    // 80% darker when dim (the Pi also lowers its backlight); black when off.
-    background: root.mode == 0 ? #00000000 : root.mode == 1 ? #000000cc : #000000;
+    // Black whenever it isn't awake, so the screen underneath doesn't show behind the clock.
+    // The Pi also lowers its backlight when dim.
+    background: root.mode == 0 ? #00000000 : #000000;
     animate background { duration: root.mode == 0 ? 0ms : 5s; }
-    Text {
-        text: root.clock;
-        color: Theme.text;
-        font-size: 96px;
-        font-weight: 800;
+    // The logo's sun sits left of the time, and fades in and out with it.
+    HorizontalLayout {
+        alignment: center;
+        spacing: 32px;
         opacity: root.mode == 1 && root.show-clock ? 1 : 0;
         animate opacity { duration: root.mode == 0 ? 0ms : 5s; }
+        VerticalLayout {
+            alignment: center;
+            // The digits sit above the middle of their line, so lift the sun to match.
+            padding-bottom: 16px;
+            Image {
+                source: @image-url("../icons/ziggy-mark.svg");
+                width: 96px;
+                height: 88px;
+            }
+        }
+        Text {
+            text: root.clock;
+            // Always light: the background is black whatever the colour scheme.
+            color: #f4f2ff;
+            font-size: 96px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
     }
     // Only catches taps while dim or off, so it never blocks the screen when awake.
     if root.mode != 0: TouchArea {

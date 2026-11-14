@@ -28,6 +28,50 @@ pub fn book_cover_url(id: &str) -> String {
 
 const BOOK_COVER: &str = "abs-cover:";
 
+/// `--fake` covers are drawn, not downloaded: "fake-cover:<collection URI>".
+const FAKE_COVER: &str = "fake-cover:";
+
+pub fn fake_cover_url(collection_uri: &str) -> String {
+    format!("{FAKE_COVER}{collection_uri}")
+}
+
+/// A two-colour gradient with a soft circle, picked from the collection URI so each
+/// fake playlist and album looks different but always the same.
+fn draw_fake_cover(key: &str, size: u32) -> RgbaImage {
+    const PAIRS: [([u8; 3], [u8; 3]); 6] = [
+        ([255, 94, 98], [255, 195, 113]),
+        ([72, 85, 199], [142, 197, 252]),
+        ([17, 153, 142], [56, 239, 125]),
+        ([142, 45, 226], [255, 110, 196]),
+        ([252, 74, 26], [247, 183, 51]),
+        ([30, 60, 114], [42, 157, 143]),
+    ];
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let h = hasher.finish();
+    let (a, b) = PAIRS[(h % PAIRS.len() as u64) as usize];
+    let (cx, cy) = (
+        size as f32 * (0.3 + ((h >> 8) % 40) as f32 / 100.0),
+        size as f32 * (0.3 + ((h >> 16) % 40) as f32 / 100.0),
+    );
+    let radius = size as f32 * 0.28;
+    RgbaImage::from_fn(size, size, |x, y| {
+        let t = (x + y) as f32 / (2 * size) as f32;
+        let mut c = [0f32; 3];
+        for k in 0..3 {
+            c[k] = a[k] as f32 * (1.0 - t) + b[k] as f32 * t;
+        }
+        let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+        let glow = (1.0 - (d - radius).max(0.0) / 6.0).clamp(0.0, 1.0) * 0.35;
+        image::Rgba([
+            (c[0] + (255.0 - c[0]) * glow) as u8,
+            (c[1] + (255.0 - c[1]) * glow) as u8,
+            (c[2] + (255.0 - c[2]) * glow) as u8,
+            255,
+        ])
+    })
+}
+
 pub fn cache_file_name(url: &str) -> String {
     let last = url.rsplit('/').next().unwrap_or("");
     let safe: String = last.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
@@ -116,6 +160,9 @@ impl ImageLoader {
     /// file on disk.
     pub async fn load(&self, request: &str) -> anyhow::Result<RgbaImage> {
         let (url, max_px) = sized(request);
+        if let Some(key) = url.strip_prefix(FAKE_COVER) {
+            return Ok(draw_fake_cover(key, max_px));
+        }
         if url.starts_with(crate::airplay::COVER) {
             let bytes = self
                 .airplay

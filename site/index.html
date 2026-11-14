@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ziggy Player</title>
+<meta name="description" content="A touchscreen music player for Spotify, built on a Raspberry Pi. No ads, no feeds, no other apps. Optional voice control runs on your own AI account.">
+<meta property="og:title" content="Ziggy Player">
+<meta property="og:description" content="A touchscreen music player for Spotify, built on a Raspberry Pi.">
+<meta property="og:image" content="https://ziggy.bergworks.org/img/now-playing.png">
+<link rel="icon" type="image/svg+xml" href="img/ziggy-mark.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #14121f;
+    --surface: #1d1a2c;
+    --surface-hi: #2a2640;
+    --line: #2f2b45;
+    --text: #f4f2ff;
+    --dim: #a9a3c7;
+    --accent: #ffb703;
+    --accent-text: #1b1300;
+    --radius: 18px;
+    --wrap: 1120px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 18px/1.6 Nunito, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  img { max-width: 100%; height: auto; display: block; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em; }
+  .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+  h1, h2, h3 { line-height: 1.15; margin: 0; font-weight: 900; letter-spacing: -0.01em; }
+  h2 { font-size: clamp(30px, 4vw, 42px); margin-bottom: 14px; }
+  h3 { font-size: 21px; font-weight: 800; margin-bottom: 6px; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--dim); font-size: 20px; max-width: 640px; }
+  section { padding: 96px 0; }
+  section + section { border-top: 1px solid var(--line); }
+
+  /* Top bar */
+  .bar { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 900; font-size: 22px; color: var(--text); text-decoration: none; }
+  .brand img { width: 34px; height: auto; display: block; }
+  .bar nav { display: flex; gap: 22px; }
+  .bar nav a { color: var(--dim); text-decoration: none; font-weight: 700; font-size: 16px; }
+  .bar nav a:hover { color: var(--text); }
+
+  .foot-logo { width: 86px; height: auto; }
+
+  /* Opening */
+  .hero { padding: 40px 0 96px; background:
+      radial-gradient(900px 500px at 85% 20%, rgba(255, 183, 3, 0.10), transparent 60%),
+      radial-gradient(700px 500px at 10% 90%, rgba(120, 90, 255, 0.12), transparent 60%); }
+  .hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 56px; align-items: center; }
+  .hero h1 { font-size: clamp(40px, 6vw, 68px); margin-bottom: 18px; }
+  .hero h1 span { color: var(--accent); display: block; font-size: 0.65em; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 999px; font-weight: 800; text-decoration: none; font-size: 17px; border: 0; cursor: pointer; font-family: inherit; }
+  .btn-primary { background: var(--accent); color: var(--accent-text); }
+  .btn-quiet { background: var(--surface-hi); color: var(--text); }
+  .btn:hover { filter: brightness(1.08); }
+
+  /* A screenshot shown in the display's black border */
+  .device { background: #050507; border-radius: 14px; padding: 3.2% 3% 4.6%; box-shadow: 0 30px 80px rgba(0,0,0,0.55), inset 0 0 0 1px #2a2a33; }
+  .device img { border-radius: 2px; aspect-ratio: 5 / 3; width: 100%; }
+  .hero .device { transform: perspective(1400px) rotateY(-9deg) rotateX(3deg); }
+  /* The assembled player in 3D; the flat picture underneath shows until, or unless, it loads. */
+  .hero-model { position: relative; aspect-ratio: 5 / 4; display: grid; align-items: center; }
+  .hero-model canvas { position: absolute; inset: -22% -32%; width: 164%; height: 144%; display: block; cursor: grab;
+    /* The shadow and the cable fade out before the edge. */
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
+    mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent); }
+  .hero { overflow: hidden; }
+  .hero-model.live .device { visibility: hidden; }
+
+  /* Features */
+  .features { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; margin-top: 44px; }
+  .feature { background: var(--surface); border-radius: var(--radius); padding: 22px; }
+  .feature .device { margin-bottom: 20px; box-shadow: 0 12px 30px rgba(0,0,0,0.4); }
+  .feature p { color: var(--dim); margin: 0; }
+  .more { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px 28px; margin-top: 36px; }
+  .more div { border-left: 3px solid var(--accent); padding-left: 14px; }
+  .more strong { display: block; font-weight: 800; }
+  .more span { color: var(--dim); font-size: 16px; }
+  /* Voice and Home Assistant: words beside a screenshot */
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
+  .split.flip > .device { order: -1; }
+  .split .device { box-shadow: 0 12px 30px rgba(0,0,0,0.4); }
+  .split .tag { display: block; font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin-bottom: 8px; }
+  .points { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 14px; }
+  .points li { color: var(--dim); border-left: 3px solid var(--accent); padding-left: 14px; }
+  .points strong { color: var(--text); font-weight: 800; display: block; }
+
+  /* Parts */
+  .parts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 40px; }
+  .part { background: var(--surface); border-radius: var(--radius); padding: 20px 22px; display: flex; flex-direction: column; }
+  .part .tag { align-self: flex-start; font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin-bottom: 8px; }
+  .part .tag.optional { color: var(--dim); }
+  .part p { color: var(--dim); font-size: 16px; margin: 0; }
+  .part a { font-weight: 700; font-size: 16px; margin-top: 10px; }
+  .note { color: var(--dim); font-size: 16px; margin-top: 22px; }
+
+  /* Assembly */
+  .assembly { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 0; margin-top: 40px; background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .stage { position: relative; min-height: 540px; background: radial-gradient(circle at 50% 40%, #2b2742 0%, #15131f 75%); }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  .stage canvas:active { cursor: grabbing; }
+  .stage .fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); padding: 24px; text-align: center; }
+  .steps { padding: 26px 26px 22px; display: flex; flex-direction: column; }
+  .step-count { font-size: 14px; font-weight: 800; color: var(--accent); letter-spacing: 0.04em; text-transform: uppercase; }
+  .step-title { font-size: 25px; font-weight: 900; margin: 6px 0 10px; line-height: 1.2; }
+  .step-text { color: var(--dim); min-height: 140px; }
+  .step-list { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 2px; }
+  .step-list button { width: 100%; text-align: left; background: none; border: 0; color: var(--dim); font: 600 15px/1.3 Nunito, sans-serif; padding: 7px 10px; border-radius: 9px; cursor: pointer; display: flex; gap: 10px; }
+  .step-list button:hover { background: var(--surface-hi); color: var(--text); }
+  .step-list button[aria-current="step"] { background: var(--surface-hi); color: var(--text); }
+  .step-list button span { color: var(--accent); font-weight: 800; min-width: 1.2em; }
+  .step-controls { display: flex; gap: 10px; margin-top: 18px; }
+  .step-controls .btn { padding: 10px 18px; font-size: 16px; }
+  .step-controls .btn[disabled] { opacity: 0.35; cursor: default; filter: none; }
+
+  /* Setup */
+  .setup { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0; gap: 22px; margin-top: 40px; counter-reset: s; }
+  .setup li { list-style: none; background: var(--surface); border-radius: var(--radius); padding: 22px; counter-increment: s; }
+  .setup li::before { content: counter(s); display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-weight: 900; margin-bottom: 14px; }
+  .setup p { color: var(--dim); font-size: 16px; }
+  .cmd { display: flex; align-items: center; gap: 8px; background: #0c0b13; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+  .cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; color: var(--text); }
+  .cmd button { background: var(--surface-hi); color: var(--text); border: 0; border-radius: 7px; padding: 5px 10px; font: 700 13px Nunito, sans-serif; cursor: pointer; }
+
+  footer { padding: 40px 0 56px; color: var(--dim); font-size: 15px; border-top: 1px solid var(--line); }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; gap: 16px 28px; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    section { padding: 64px 0; }
+    .hero-grid, .assembly { grid-template-columns: minmax(0, 1fr); }
+    .hero .device { transform: none; }
+    .features, .parts, .setup, .more, .split { grid-template-columns: minmax(0, 1fr); }
+    .split { gap: 32px; }
+    .split.flip > .device { order: 0; }
+    .stage { min-height: 380px; }
+    .step-text { min-height: 0; }
+    .bar nav { display: none; }
+  }
+  @media (max-width: 480px) {
+    .wrap { padding: 0 16px; }
+    body { font-size: 17px; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="bar">
+      <a class="brand" href="#">
+        <img src="img/ziggy-mark.svg" alt="" width="34" height="31">
+        Ziggy
+      </a>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#voice">Voice</a>
+        <a href="#home">Home</a>
+        <a href="#parts">Parts</a>
+        <a href="#build">Assembly</a>
+        <a href="#setup">Setup</a>
+        <a href="https://github.com/mberg/ziggy">GitHub</a>
+      </nav>
+    </div>
+    <div class="hero-grid">
+      <div>
+        <h1>Ziggy <span>No apps, just music</span></h1>
+        <p class="lead">An open source touchscreen music player you build yourself.</p>
+        <div class="buttons">
+          <a class="btn btn-primary" href="#build">How to build one</a>
+          <a class="btn btn-quiet" href="https://github.com/mberg/ziggy">Code on GitHub</a>
+        </div>
+      </div>
+      <div class="hero-model" id="hero-model" role="img" aria-label="An assembled Ziggy player standing on its legs, showing the Now Playing screen">
+        <div class="device"><img src="img/now-playing.png" alt="" width="1600" height="960"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+<section id="features">
+  <div class="wrap">
+    <h2>Music without the phone</h2>
+    <p class="lead">We built Ziggy as a way for kids to discover and listen to music. No apps. No distractions. The way we did growing up.</p>
+    <div class="features">
+      <div class="feature">
+        <div class="device"><img src="img/playlists.png" alt="A grid of playlists with their covers" loading="lazy" width="1600" height="960"></div>
+        <h3>Your Spotify or MP3 collection</h3>
+        <p>Ziggy is designed to work with Spotify (requires Spotify Premium) or with MP3s kept on the player. Playlists, albums, artists and liked songs, plus search.</p>
+      </div>
+      <div class="feature">
+        <div class="device"><img src="img/playlist.png" alt="A playlist's songs, with a large Play button" loading="lazy" width="1600" height="960"></div>
+        <h3>Play it, heart it, save it</h3>
+        <p>Easily search and find the artists and albums you want. No AI suggestions.</p>
+      </div>
+    </div>
+    <div class="more">
+      <div><strong>Speakers</strong><span>Headphone jack, Bluetooth or Sonos.</span></div>
+      <div><strong>AirPlay</strong><span>Play to it from an iPhone, iPad or Mac.</span></div>
+      <div><strong>Audiobooks</strong><span>From your Audiobookshelf server.</span></div>
+      <div><strong>Bedtime</strong><span>A sleep timer, and a screen that turns itself off.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="voice">
+  <div class="wrap split">
+    <div>
+      <span class="tag">Optional</span>
+      <h2>Voice control</h2>
+      <p class="lead">"Ziggy, play Road Trip." Add a USB microphone and bring your own AI model.</p>
+      <ul class="points">
+        <li><strong>You have complete control</strong>Select Gemini or your preferred model. No snooping by Apple or Alexa: the wake word is heard on the Pi, and no audio leaves the player until someone says "Ziggy".</li>
+        <li><strong>Truly smart search</strong>"Ziggy, play Paul Simon's first solo album." Fully benefit from your AI's intelligence.</li>
+      </ul>
+    </div>
+    <div class="device"><img src="img/voice.png" alt="The Albums screen with a Listening indicator at the bottom" loading="lazy" width="1600" height="960"></div>
+  </div>
+</section>
+
+<section id="home">
+  <div class="wrap split flip">
+    <div>
+      <span class="tag">Optional</span>
+      <h2>Home Assistant</h2>
+      <p class="lead">Control your smart devices via Home Assistant.</p>
+      <ul class="points">
+        <li><strong>Ziggy is open source</strong>Add your own devices (e.g. Ring cameras) and actions.</li>
+      </ul>
+    </div>
+    <div class="device"><img src="img/home.png" alt="Home Assistant tiles for lights, a fan and scene buttons" loading="lazy" width="1600" height="960"></div>
+  </div>
+</section>
+
+<section id="parts">
+  <div class="wrap">
+    <h2>Parts</h2>
+    <div class="parts">
+      <div class="part">
+        <span class="tag">Computer</span>
+        <h3>Raspberry Pi 3 Model A+</h3>
+        <p>Small, cool-running and enough for Ziggy. Any newer Pi works too.</p>
+        <a href="https://www.pishop.us/product/raspberry-pi-3-model-a-plus-512mb-ram/">PiShop.us</a>
+      </div>
+      <div class="part">
+        <span class="tag">Screen</span>
+        <h3>7" DSI touchscreen</h3>
+        <p>An 800×480 touchscreen such as Hosyond's, which carries the Pi on its back. Standoffs, screws, the ribbon cable and two legs come in the box.</p>
+        <a href="https://www.amazon.com/Hosyond-Touchscreen-Compatible-Capacitive-Driver-Free/dp/B0D3QB7X4Z">Amazon</a>
+      </div>
+      <div class="part">
+        <span class="tag">Storage</span>
+        <h3>microSD card, 16 GB</h3>
+        <p>Holds Raspberry Pi OS and the player. 16 GB leaves plenty of room; 8 GB is the least. Pick one marked A1; a faster card makes no difference on this Pi.</p>
+        <a href="https://www.amazon.com/dp/B0CYT2DVSQ">Amazon</a>
+      </div>
+      <div class="part">
+        <span class="tag">Power</span>
+        <h3>5 V micro-USB supply</h3>
+        <p>2.5 A, like the official Raspberry Pi supply, or a USB charger with a right-angle micro-USB cable, which stays out of sight behind the screen. The Pi powers the screen through its pins.</p>
+        <a href="https://www.amazon.com/dp/B01COTBHW4">Right-angle cable on Amazon</a>
+      </div>
+      <div class="part">
+        <span class="tag">Sound</span>
+        <h3>Speakers or headphones</h3>
+        <p>Anything on the Pi's headphone jack, a Bluetooth speaker, or a Sonos system.</p>
+      </div>
+      <div class="part">
+        <span class="tag optional">Optional</span>
+        <h3>USB microphone</h3>
+        <p>For voice control. A small one plugs into the Pi's one USB port.</p>
+        <a href="https://www.pishop.us/product/mini-usb-microphone/">PiShop.us</a>
+      </div>
+    </div>
+    <p class="note">The parts total about $80–90. You also need a Spotify Premium account.</p>
+  </div>
+</section>
+
+<section id="build">
+  <div class="wrap">
+    <h2>Putting it together</h2>
+    <div class="assembly">
+      <div class="stage" id="stage">
+        <noscript><div class="fallback">The 3D model needs JavaScript.</div></noscript>
+      </div>
+      <div class="steps">
+        <div class="step-count" id="step-count">Step 1 of 10</div>
+        <div class="step-title" id="step-title" aria-live="polite"></div>
+        <p class="step-text" id="step-text"></p>
+        <div class="step-controls">
+          <button class="btn btn-quiet" id="prev" type="button">Back</button>
+          <button class="btn btn-primary" id="next" type="button">Next</button>
+          <button class="btn btn-quiet" id="play" type="button">Play all</button>
+        </div>
+        <ol class="step-list" id="step-list"></ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="wrap">
+    <h2>Setting it up</h2>
+    <ol class="setup">
+      <li>
+        <h3>Install the setup tool</h3>
+        <p>On a Mac or Linux computer:</p>
+        <div class="cmd"><code>curl -fsSL https://raw.githubusercontent.com/mberg/ziggy/main/install.sh | sh</code><button type="button" data-copy>Copy</button></div>
+      </li>
+      <li>
+        <h3>Prepare the card</h3>
+        <p>In <a href="https://www.raspberrypi.com/software/">Raspberry Pi Imager</a>, write Raspberry Pi OS Lite (64-bit). In its settings, set a hostname, your Wi-Fi, and SSH with your public key.</p>
+      </li>
+      <li>
+        <h3>Run setup</h3>
+        <p>With the Pi on and the card in, run:</p>
+        <div class="cmd"><code>ziggy setup</code><button type="button" data-copy>Copy</button></div>
+        <p style="margin-top:12px">The <a href="https://github.com/mberg/ziggy#readme">README</a> has every step, and how to look after a player.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <img class="foot-logo" src="img/ziggy-logo.svg" alt="Ziggy" width="86" height="80">
+    <span>Ziggy is open source. Spotify is a trademark of Spotify AB; Ziggy isn't made by Spotify.</span>
+    <a href="https://github.com/mberg/ziggy">github.com/mberg/ziggy</a>
+  </div>
+</footer>
+
+<script>
+  for (const b of document.querySelectorAll("[data-copy]")) {
+    b.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(b.previousElementSibling.textContent);
+        b.textContent = "Copied";
+        setTimeout(() => (b.textContent = "Copy"), 1500);
+      } catch {}
+    });
+  }
+</script>
+<script type="module">
+  import { mountAssembly, STEPS } from "./assembly.js";
+
+  const $ = (id) => document.getElementById(id);
+  const list = $("step-list");
+  const buttons = STEPS.map((s, i) => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.innerHTML = `<span>${i + 1}</span>`;
+    b.append(s.title);
+    b.addEventListener("click", () => { stopPlaying(); viewer.goTo(i); });
+    li.append(b);
+    list.append(li);
+    return b;
+  });
+
+  function show(i) {
+    $("step-count").textContent = `Step ${i + 1} of ${STEPS.length}`;
+    $("step-title").textContent = STEPS[i].title;
+    $("step-text").textContent = STEPS[i].text;
+    buttons.forEach((b, k) => (k === i ? b.setAttribute("aria-current", "step") : b.removeAttribute("aria-current")));
+    $("prev").disabled = i === 0;
+    $("next").disabled = i === STEPS.length - 1;
+  }
+
+  try {
+    mountAssembly($("hero-model"), { screenUrl: "img/now-playing.png", finished: true });
+    $("hero-model").classList.add("live");
+  } catch (e) {}
+
+  let viewer;
+  try {
+    viewer = mountAssembly($("stage"), { screenUrl: "img/now-playing.png", onStep: show });
+  } catch (e) {
+    $("stage").innerHTML = '<div class="fallback">This browser can\'t show the 3D model. The steps on the right still describe each part.</div>';
+    viewer = { goTo: show, step: 0, count: STEPS.length };
+    show(0);
+  }
+
+  // Play all: each step plays, then there's a pause to read it.
+  let timer = null;
+  function stopPlaying() {
+    clearTimeout(timer);
+    timer = null;
+    $("play").textContent = "Play all";
+  }
+  function playNext() {
+    if (viewer.step >= STEPS.length - 1) return stopPlaying();
+    viewer.goTo(viewer.step + 1);
+    timer = setTimeout(playNext, (viewer.length ?? 0) + 2200);
+  }
+  $("prev").addEventListener("click", () => { stopPlaying(); viewer.goTo(viewer.step - 1); });
+  $("next").addEventListener("click", () => { stopPlaying(); viewer.goTo(viewer.step + 1); });
+  $("play").addEventListener("click", () => {
+    if (timer) return stopPlaying();
+    $("play").textContent = "Pause";
+    if (viewer.step === STEPS.length - 1) viewer.goTo(0);
+    timer = setTimeout(playNext, viewer.step === 0 ? 1200 : 0);
+  });
+</script>
+</body>
+</html>
