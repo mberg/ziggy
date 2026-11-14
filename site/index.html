@@ -47,7 +47,8 @@
   section + section { border-top: 1px solid var(--line); }
 
   /* Top bar */
-  .bar { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  /* Above the hero model, whose canvas reaches up behind the bar. */
+  .bar { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; position: relative; z-index: 2; }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 900; font-size: 22px; color: var(--text); text-decoration: none; }
   .brand img { width: 34px; height: auto; display: block; }
   .bar nav { display: flex; gap: 22px; }
@@ -175,7 +176,7 @@
       <nav>
         <a href="#features">Features</a>
         <a href="#voice">Voice</a>
-        <a href="#home">Home</a>
+        <a href="#home">Smart home</a>
         <a href="#parts">Parts</a>
         <a href="#build">Assembly</a>
         <a href="#setup">Setup</a>
