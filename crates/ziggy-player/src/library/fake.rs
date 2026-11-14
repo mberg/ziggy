@@ -56,7 +56,9 @@ impl FakeCatalog {
                     kind: CollectionKind::Playlist,
                     name: name.to_string(),
                     subtitle: if mine { "Fake Account" } else { "Someone Else" }.into(),
-                    image_url: None,
+                    image_url: Some(crate::images::fake_cover_url(&format!(
+                        "spotify:playlist:fake{i}"
+                    ))),
                     owner_id: Some(if mine { FAKE_ACCOUNT_ID } else { "someone" }.into()),
                     snapshot_id: None,
                     artist_uri: None,
@@ -72,7 +74,9 @@ impl FakeCatalog {
                 kind: CollectionKind::Album,
                 name: name.to_string(),
                 subtitle: artist.to_string(),
-                image_url: None,
+                image_url: Some(crate::images::fake_cover_url(&format!(
+                    "spotify:album:fake{i}"
+                ))),
                 artist_uri: Some(fake_artist().uri),
                 year: Some(*year),
                 ..Default::default()
@@ -270,7 +274,7 @@ fn fake_tracks(collection_uri: &str, collection: &str, n: u32) -> Vec<Track> {
             name: format!("{collection} Song {i}"),
             artists: "The Fake Band".into(),
             album: collection.to_string(),
-            image_url: None,
+            image_url: Some(crate::images::fake_cover_url(collection_uri)),
             // Short tracks so auto-advance is visible during UI work.
             duration_ms: 20_000 + i * 1_000,
             // The fake player only knows collections, so a single song plays in its own one.

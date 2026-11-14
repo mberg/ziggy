@@ -10,9 +10,17 @@ A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotif
 - **Voice control:** say "ziggy, play Road Trip", "ziggy, heart this" or, with Home Assistant, "ziggy, turn off the lights". Voice is optional and needs a USB microphone.
 - **Bedtime:** a sleep timer that fades the music out, and a screen that dims and turns itself off.
 
+| | |
+|---|---|
+| ![Now Playing](docs/screenshots/now-playing.png) | ![Playlists](docs/screenshots/playlists.png) |
+| ![Home Assistant controls](docs/screenshots/home.png) | ![A playlist](docs/screenshots/playlist.png) |
+
+The screenshots use a made-up library. To make them again, run `cargo run -p ziggy-player --example screenshots -- docs/screenshots`.
+
 ## What you need
 
-- A Raspberry Pi 3 A+ or newer, with the official 7" touchscreen, a power supply and a microSD card (8 GB or more).
+- A Raspberry Pi 3 A+ or newer, a power supply and a microSD card (16 GB is plenty; 8 GB is the least).
+- A 7" DSI touchscreen: the official Raspberry Pi one, or one like Hosyond's 7" DSI display, which carries the Pi on its back.
 - Speakers or headphones: the Pi's headphone jack, a Bluetooth speaker, or a Sonos system.
 - A Spotify Premium account for each person.
 - A Mac or Linux computer to run setup from, on the same Wi-Fi as the Pi.

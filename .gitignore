@@ -1,3 +1,4 @@
 /target
 /dev/state
 /secrets
+/.playwright-mcp
