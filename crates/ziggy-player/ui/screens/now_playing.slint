@@ -17,6 +17,8 @@ export component NowPlayingScreen inherits Rectangle {
     in property <int> repeat;
     // A phone or computer plays over AirPlay: its buttons work, seeking, shuffle and repeat don't.
     in property <bool> airplay;
+    // The song is from the card.
+    in property <bool> on-card;
     callback back();
     callback toggle-play();
     callback next();
@@ -75,17 +77,17 @@ export component NowPlayingScreen inherits Rectangle {
         VerticalLayout {
             spacing: 14px;
             alignment: center;
-            if root.airplay: HorizontalLayout {
+            if root.airplay || root.on-card: HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
                 Image {
-                    source: @image-url("../icons/airplay.svg");
+                    source: root.airplay ? @image-url("../icons/airplay.svg") : @image-url("../icons/note.svg");
                     width: 22px;
                     height: 22px;
                     colorize: Theme.accent;
                 }
                 Text {
-                    text: "AirPlay";
+                    text: root.airplay ? "AirPlay" : "On this player";
                     color: Theme.accent;
                     font-size: Theme.font-small;
                     font-weight: 800;

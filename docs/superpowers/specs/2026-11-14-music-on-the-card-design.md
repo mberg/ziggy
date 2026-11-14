@@ -7,7 +7,8 @@ Status: Draft for review
 
 Ziggy plays music files kept on the player's own SD card (MP3, M4A/AAC, FLAC), alongside Spotify or without it.
 
-- **Side by side.** Music on the card has its own item in the rail. Spotify sections are unchanged. Playing one pauses the other, the same way AirPlay works today.
+- **Off unless turned on.** On a player with Spotify, My music is off by default, so someone using only Spotify never sees it. It's turned on in `ziggy setup`, in Settings → My music on the touchscreen, or in `ziggy config` (config key `my_music`, default false). A card-only player always has it on, and setup writes `my_music = true` there too.
+- **Side by side.** Once on, music on the card has its own item in the rail. Spotify sections are unchanged. Playing one pauses the other, the same way AirPlay works today.
 - **Card-only players.** A player can be set up with no Spotify account at all. It then shows only the music on the card, and needs no Spotify Premium.
 - **Getting music on.** Three ways, all landing in the same folder:
   - a shared folder that shows up in Finder or Windows;
@@ -31,8 +32,8 @@ The rail item is **My music**.
 
 ### With Spotify
 
-- **Rail:** a **My music** item, shown when the card has at least one song.
-- **My music screen:** Albums and Artists tabs, with the existing grid and list toggle. Albums are sorted by artist, then by name.
+- **Rail:** a **My music** item, shown when My music is on and the card has at least one song.
+- **My music screen:** every album, with the existing grid and list toggle, sorted by artist (ignoring "The"), then by name. An album page leads to its artist's page, which lists that artist's albums on the card. A separate Artists tab is left for later.
 - **Album page:** the cover and track list, with Play and Shuffle, like a Spotify album.
 - **Artist page:** that artist's albums from the card.
 - **Now Playing:** the same screen, marked "On this player" the way AirPlay is marked "AirPlay". Play, pause, skip, seek, shuffle, repeat, volume and the sleep timer all work.
@@ -51,16 +52,16 @@ The rail item is **My music**.
 
 ## Getting music onto the player
 
-All three ways write to one folder on the Pi: `/var/lib/ziggy/music`. It is owned by the `ziggy-player` user, with a group the SSH user is added to, so both can write. Any folder layout works, because the library is read from the files' tags. `Artist/Album/01 Song.mp3` is suggested.
+All three ways write to one folder on the Pi: `/var/lib/ziggy-music` (the player's `DEFAULT_MUSIC_DIR`; `music_dir` in the config can change it). It is owned by `ziggy-player`, with the group `ziggy-music` and mode 2775, so new folders keep the group. The SSH user and `ziggy-player` are in `ziggy-music`, so both can write. It sits outside `/var/lib/ziggy`, which is mode 700. Any folder layout works, because the library is read from the files' tags. `Artist/Album/01 Song.mp3` is suggested.
 
 A 16 GB card has about 10 GB free after the system, which is roughly 2,000–2,500 songs at normal MP3 quality.
 
 ### The shared folder
 
-- [Samba](https://www.samba.org/), the standard Mac and Windows file-sharing service, shares the folder as **Music** under the player's name, such as "Ziggy Kitchen". Avahi announces it, so it shows up in Finder's sidebar.
-- **Off by default.** It's turned on in Settings → My music → Shared folder, or in `ziggy config`. `ziggy setup` offers to turn it on.
-- **No password by default**, so a family can drag files in without accounts. Anyone on the home Wi-Fi can reach it. `ziggy config` can set a password.
-- `smbd` only runs while the share is on, so players that don't use it pay nothing in memory on the Pi 3 A+, which has 512 MB.
+- [Samba](https://www.samba.org/), the standard Mac and Windows file-sharing service, shares the folder as **Music** under the player's hostname, such as `ziggy-kitchen`. Avahi announces it (`multicast dns register = yes`), so it shows up in Finder under Network. `/etc/samba/smb.conf` has only this share: no printers or home folders, SMB2 or newer, and files saved through it belong to `ziggy-player` and `ziggy-music` (664, folders 2775).
+- **Off by default.** It's turned on in Settings → My music → Shared folder, or in `ziggy config`. `ziggy setup` offers to turn it on, and asks only when My music is on. The config key is `music_share`; the touchscreen's choice comes first.
+- **No password by default**, so a family can drag files in without accounts. Anyone on the home Wi-Fi can reach it. `ziggy music share-password` sets a password: it makes `ziggy`, a user that can't log in to the Pi, gives it a Samba password, and the share then takes only `ziggy`. An empty password goes back to open access.
+- `smbd` only runs while the share is on, so players that don't use it pay nothing in memory on the Pi 3 A+, which has 512 MB. `nmbd` never runs. The player starts and stops `smbd` itself, at start-up and from Settings, with `sudo -n /usr/bin/systemctl enable --now smbd` and `… disable --now smbd`. Those two lines are added to the player's sudo rules, beside Turn off and Reconnect.
 
 ### The `ziggy music` command
 
@@ -69,13 +70,15 @@ ziggy music add <files or folders> ziggy-kitchen.local
 ziggy music list ziggy-kitchen.local
 ziggy music remove <album or folder> ziggy-kitchen.local
 ziggy music space ziggy-kitchen.local
+ziggy music share-password ziggy-kitchen.local
 ```
 
-- `add` copies with `rsync` over SSH, keeping each folder's layout and skipping files that are already there. It checks the free space first, and stops with a clear message if the music won't fit. It accepts the three supported formats and lists anything it skipped.
-- `list` prints albums and artists as the player sees them, read from the player's index.
-- `remove` deletes an album's folder.
+- `add` copies with `rsync` over SSH, keeping each folder's layout and skipping files that are already there. A folder is copied by its name; a file goes in the top of the music folder. It checks the free space first, and stops with a clear message if the music won't fit. It accepts the three supported formats and album covers, and lists anything it skipped. Afterwards it opens what it copied up to the group (folders 2775, files 664).
+- `list` prints the music folder by its top two levels of folders (usually Artist / Album), with song counts and sizes. It reads the folders, not the player's index, so it works while the player is off or still scanning.
+- `remove` deletes a folder inside the music folder, after asking (`--yes` skips the question, for the agent skill). Paths with `..` or outside the music folder are refused.
 - `space` shows how much room is left.
-- Setup installs `rsync` on the Pi.
+- `add` warns when My music is off in the player's config, and says how to turn it on.
+- Setup installs `rsync` and Samba on the Pi. `ziggy update` and `ziggy setup` install them on players set up before this, make the folder and group, and write Samba's settings.
 
 ### The agent skill
 
@@ -90,11 +93,11 @@ The skill only calls `ziggy music`. It never writes to the Pi by itself, so the 
 
 ## The library on the player
 
-- **Reading tags.** [`lofty`](https://crates.io/crates/lofty) reads title, artist, album artist, album, track and disc number, year and length from MP3, M4A and FLAC.
+- **Reading tags.** [`symphonia`](https://crates.io/crates/symphonia), which also plays the files, reads title, artist, album artist, album, track and disc number, year, length and the embedded picture from MP3 (ID3), M4A and FLAC. One library does both jobs.
 - **Covers.** The embedded picture comes first. Otherwise `cover.jpg`, `folder.jpg` or `front.jpg` in the album's folder. Otherwise the made-up gradient cover.
 - **Missing tags.** Without tags, the folder names stand in for artist and album, and the file name stands in for the title.
-- **Index.** Kept in SQLite next to the play history: one row per file, with its path, size, modified time and tags. Only new or changed files are read again.
-- **Noticing changes.** A scan runs at start. While running, [`notify`](https://crates.io/crates/notify) (inotify on the Pi) watches the folder. Changes are batched and wait until copying has paused for a few seconds, so a half-copied album isn't added. A scan of a few thousand unchanged files only compares sizes and times.
+- **Index.** Kept in `music-index.json` in the state folder: one entry per file, with its path, size, modified time and tags. Only new or changed files are read again, and the albums show at once after a restart.
+- **Noticing changes.** The folder is scanned at start and every 15 seconds after. A file changed in the last 10 seconds may still be copying, so it waits for a later scan. A scan of a few thousand unchanged files only compares sizes and times. This is simpler than watching for file events, and works the same for files copied over SSH and over the shared folder.
 - **IDs.** Songs are `local:track:<id>`, albums `local:album:<id>` and artists `local:artist:<id>`. Each ID is a short hash of the album artist and album name, so an album keeps its ID if its folder is renamed.
 - **In the existing types.** The library is served as `Collection` and `Track` values, so the album and track screens are reused. A second `LibrarySource` implementation, `library/local.rs`, answers `section` and `tracks` for My music.
 
@@ -102,23 +105,27 @@ The skill only calls `ziggy music`. It never writes to the Pi by itself, so the 
 
 A new `player/local` module, driven by the same `PlayerCommand`s as Soloist and Sonos, and answering with the same `PlayerUpdate`s.
 
-- **Decoding:** [`symphonia`](https://crates.io/crates/symphonia) handles MP3, AAC in M4A, and FLAC. Audio is resampled to 44.1 kHz stereo if needed.
-- **Output:** 16-bit stereo to `pw-cat`, as AirPlay does, with the same target for a Bluetooth speaker. The stream is closed when paused, so a Bluetooth speaker can sleep.
+- **Decoding:** [`symphonia`](https://crates.io/crates/symphonia) handles MP3, AAC in M4A, and FLAC, on its own thread.
+- **Output:** 16-bit samples to `pw-cat` at the file's own rate and channels, as AirPlay does, with the same target for a Bluetooth speaker; PipeWire converts. The stream is closed when paused, so a Bluetooth speaker can sleep. On a Mac, for development, it plays through the computer's speakers instead.
 - **Queue:** the album's or search result's songs, with shuffle, repeat (off, all, one), next and previous. Previous restarts the song after 3 seconds, as Spotify does.
 - **Seek:** done in the decoder.
 - **Volume:** shares the player's volume setting, applied by scaling samples so the volume slider means the same as with Spotify. Whether PipeWire's own node volume is better is checked during the build.
 - **Position:** reported every second for the scrubber, and written to history the same way as Spotify plays.
 - **Gapless playback:** not in the first version.
 
-### Core state
+### Spotify and the card side by side
 
-- `AppState` gets a `source: Spotify | Local | AirPlay`. The AirPlay flag becomes one case of it.
-- Commands from Now Playing go to whichever source is playing.
-- Sleep timer, screen wake and "playing keeps the screen awake" work for all three.
+- A router (`player/router.rs`) sits between the core and the two players. The core still sees one player.
+- Loading anything from the card (`local:` URIs) pauses Spotify and hands the speaker to the local player. Loading anything else hands it back.
+- Only the player with the speaker reaches the core. When the speaker is handed back, the router replays that player's last song, shuffle, repeat and play state, so Now Playing shows it again.
+- Spotify starting to play by itself more than 3 seconds after the card took over (someone picked the player in a Spotify app) takes the speaker back.
+- Volume goes to both players, so switching doesn't jump.
+- AirPlay, the sleep timer and screen wake need no changes: they already work through the one player the core sees.
 
 ## Voice
 
-- The Gemini tool that plays things gains the music on the card. Its `kind` list stays the same; a new `where` field takes `spotify`, `card` or `any`.
+- Gemini's library list includes the albums and artists on the card, marked "album on this player" and "artist on this player". Its instructions say to pick those only when the listener asks for their own music, or for music on the player. No new tool fields were needed.
+- A search runs on Spotify and the card together. The player uses Spotify's match when there is one of the kind asked for, and the card's otherwise, or when Spotify can't be reached.
 - **With Spotify on, Spotify comes first.** A plain "play Moana" plays it from Spotify. The card is searched only when asked for ("play Moana from my music"), or when Spotify finds nothing.
 - **On a card-only player,** every request is matched against the card.
 - "Pause", "next", "louder" and the sleep timer work as they do for Spotify.
@@ -126,7 +133,7 @@ A new `player/local` module, driven by the same `PlayerCommand`s as Soloist and 
 
 ## Card-only setup
 
-- `ziggy setup` asks early: **Use Spotify on this player? (needs Spotify Premium)**.
+- `ziggy setup` asks early: **Use Spotify on this player? (needs Spotify Premium)**. On a Spotify player it then asks **Also play music files from the player's card (My music)?**, default no.
 - If no, it skips the Soloist key, the developer app and both sign-ins. Install leaves out Soloist and its service.
 - The device config gets `spotify = false`. The player then starts neither Soloist nor the Web API library. It hides the Spotify sections, and doesn't show Spotify sign-in or rate-limit messages.
 - Running `ziggy setup` again with "yes" adds Spotify. Music on the card stays.

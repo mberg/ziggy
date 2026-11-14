@@ -267,6 +267,25 @@ pub async fn power_off() {
     }
 }
 
+/// Turns the shared music folder (Samba) on or off, now and after a restart. The service
+/// user may run exactly these through sudo (set up by `ziggy setup` and `ziggy update`).
+pub async fn share_music(on: bool) {
+    let verb = if on { "enable" } else { "disable" };
+    match tokio::process::Command::new("sudo")
+        .args(["-n", "/usr/bin/systemctl", verb, "--now", "smbd"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+    {
+        Ok(status) if status.success() => tracing::info!("shared music folder {verb}d"),
+        Ok(status) => {
+            tracing::warn!("couldn't {verb} the shared music folder: sudo exited with {status}")
+        }
+        Err(e) => tracing::warn!("couldn't {verb} the shared music folder: {e}"),
+    }
+}
+
 /// Asks NetworkManager to rejoin the Wi-Fi when it's down, waiting up to 45 s. The service
 /// user may run exactly this through sudo (set up by `ziggy setup` and `ziggy update`); on a
 /// computer without it, nothing happens. A connected Wi-Fi is left alone: asking again drops

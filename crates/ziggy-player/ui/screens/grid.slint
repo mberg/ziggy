@@ -9,6 +9,8 @@ export component GridScreen inherits Rectangle {
     in property <string> title;
     in property <[TileData]> tiles;
     in property <LoadState> state;
+    // What an empty grid says (My music, before any music is added).
+    in property <string> empty-text;
     callback open(string);
     in property <bool> list-view;
     callback toggle-layout();
@@ -121,5 +123,6 @@ export component GridScreen inherits Rectangle {
         width: root.width;
         height: root.height - root.header;
         state: root.state;
+        empty-text: root.empty-text;
     }
 }

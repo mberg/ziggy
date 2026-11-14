@@ -165,6 +165,14 @@ export component SettingsScreen inherits Rectangle {
     in property <bool> airplay-available;
     in property <bool> airplay-enabled;
     callback set-airplay(bool);
+    // My music: music files on the card, and the folder shared on the Wi-Fi.
+    in property <bool> my-music;
+    callback set-my-music(bool);
+    in property <bool> music-share-available;
+    in property <bool> music-share-on;
+    callback set-music-share(bool);
+    // False on a card-only player: no Spotify account card, and My music stays on.
+    in property <bool> spotify: true;
     callback edit-books-server();
     callback books-sign-in();
     callback books-sign-out();
@@ -338,6 +346,59 @@ export component SettingsScreen inherits Rectangle {
                     wrap: word-wrap;
                 }
             }
+            Card {
+                title: "My music";
+                if root.spotify: HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    SmallPill {
+                        label: "On";
+                        primary: root.my-music;
+                        clicked => { root.set-my-music(true); }
+                    }
+                    SmallPill {
+                        label: "Off";
+                        primary: !root.my-music;
+                        clicked => { root.set-my-music(false); }
+                    }
+                }
+                Text {
+                    text: root.my-music
+                        ? "Plays music files on this player's card. Add them with ziggy music add from your computer."
+                        : "Plays music files on this player's card, alongside Spotify. Turning it on restarts the player.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
+                }
+                if root.my-music && root.music-share-available: Text {
+                    text: "Shared folder";
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 800;
+                }
+                if root.my-music && root.music-share-available: HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    SmallPill {
+                        label: "On";
+                        primary: root.music-share-on;
+                        clicked => { root.set-music-share(true); }
+                    }
+                    SmallPill {
+                        label: "Off";
+                        primary: !root.music-share-on;
+                        clicked => { root.set-music-share(false); }
+                    }
+                }
+                if root.my-music && root.music-share-available: Text {
+                    text: root.music-share-on
+                        ? "Copy music into the Music folder this player shares on the Wi-Fi. On a Mac, it's in Finder under Network. Anyone on the Wi-Fi can add or remove music."
+                        : "Shares the music folder on the Wi-Fi, so you can copy music in from a computer.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
+                }
+            }
             if root.airplay-available: Card {
                 title: "AirPlay";
                 HorizontalLayout {
@@ -450,7 +511,7 @@ export component SettingsScreen inherits Rectangle {
                     wrap: word-wrap;
                 }
             }
-            Card {
+            if root.spotify: Card {
                 title: "Spotify account";
                 Text {
                     text: root.account-name == "" ? "Not loaded yet" : root.account-name;

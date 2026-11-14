@@ -186,6 +186,14 @@ export component AppWindow inherits Window {
     in property <bool> airplay-available;
     in property <bool> airplay-enabled;
     in property <bool> now-airplay;
+    in property <bool> now-local;
+    in property <bool> music-share-available;
+    in property <bool> music-share-on;
+    callback set-music-share(bool);
+    callback set-my-music(bool);
+    in property <bool> my-music-enabled;
+    in property <bool> spotify: true;
+    in property <string> grid-empty-text;
     callback set-airplay(bool);
     callback edit-books-server();
     callback books-sign-in();
@@ -236,6 +244,8 @@ export component AppWindow inherits Window {
         selected: root.section;
         books: root.books-enabled;
         home: root.home-enabled;
+        my-music: root.my-music-enabled;
+        spotify: root.spotify;
         select(i) => { root.show-section(i); }
     }
     GridScreen {
@@ -247,6 +257,7 @@ export component AppWindow inherits Window {
         title: root.grid-title;
         tiles: root.tiles;
         state: root.grid-state;
+        empty-text: root.grid-empty-text;
         open(uri) => { root.open-collection(uri); }
         list-view: root.list-view;
         toggle-layout => { root.toggle-list-view(); }
@@ -397,6 +408,12 @@ export component AppWindow inherits Window {
         books-user: root.books-user;
         books-message: root.books-settings-message;
         set-books-enabled(b) => { root.set-books-enabled(b); }
+        my-music: root.my-music-enabled;
+        set-my-music(b) => { root.set-my-music(b); }
+        music-share-available: root.music-share-available;
+        music-share-on: root.music-share-on;
+        set-music-share(b) => { root.set-music-share(b); }
+        spotify: root.spotify;
         airplay-available: root.airplay-available;
         airplay-enabled: root.airplay-enabled;
         set-airplay(b) => { root.set-airplay(b); }
@@ -467,6 +484,7 @@ export component AppWindow inherits Window {
         shuffle: root.shuffle;
         repeat: root.repeat;
         airplay: root.now-airplay;
+        on-card: root.now-local;
         back => { root.back(); }
         toggle-play => { root.toggle-play(); }
         next => { root.next(); }

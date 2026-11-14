@@ -19,6 +19,8 @@ pub struct ImageLoader {
     books: Option<crate::audiobooks::service::AbsHandle>,
     /// AirPlay covers ("airplay-cover:…") come from the phone and are only kept in memory.
     airplay: Option<crate::airplay::CoverStore>,
+    /// My music covers ("local-cover:<album id>") are read from the card each time.
+    music: Option<crate::music::SharedIndex>,
 }
 
 /// The image URL for an Audiobookshelf book's cover.
@@ -120,6 +122,7 @@ impl ImageLoader {
             dir,
             books: None,
             airplay: None,
+            music: None,
         })
     }
 
@@ -131,6 +134,31 @@ impl ImageLoader {
     pub fn with_airplay(mut self, covers: crate::airplay::CoverStore) -> Self {
         self.airplay = Some(covers);
         self
+    }
+
+    pub fn with_music(mut self, index: crate::music::SharedIndex) -> Self {
+        self.music = Some(index);
+        self
+    }
+
+    /// The picture for an album on the card: a picture file in its folder, or one inside a song.
+    fn local_cover(&self, album_id: &str) -> anyhow::Result<Vec<u8>> {
+        use crate::music::index::Cover;
+        let index = self
+            .music
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no music on the card"))?;
+        let (root, cover) = {
+            let index = index.read().unwrap();
+            let cover = index.album(album_id).and_then(|a| a.cover.clone());
+            (index.root.clone(), cover)
+        };
+        match cover {
+            Some(Cover::File(path)) => Ok(std::fs::read(root.join(path))?),
+            Some(Cover::Embedded(path)) => crate::music::tags::read_picture(&root.join(path))
+                .ok_or_else(|| anyhow::anyhow!("the song's picture can't be read")),
+            None => anyhow::bail!("that album has no cover"),
+        }
     }
 
     async fn download(&self, url: &str) -> anyhow::Result<Vec<u8>> {
@@ -162,6 +190,10 @@ impl ImageLoader {
         let (url, max_px) = sized(request);
         if let Some(key) = url.strip_prefix(FAKE_COVER) {
             return Ok(draw_fake_cover(key, max_px));
+        }
+        if let Some(id) = url.strip_prefix(crate::music::index::COVER_PREFIX) {
+            let bytes = self.local_cover(id)?;
+            return tokio::task::spawn_blocking(move || decode(&bytes, max_px)).await?;
         }
         if url.starts_with(crate::airplay::COVER) {
             let bytes = self

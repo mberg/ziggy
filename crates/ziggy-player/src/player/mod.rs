@@ -1,4 +1,6 @@
 pub mod fake;
+pub mod local;
+pub mod router;
 pub mod soloist;
 pub mod sonos;
 

@@ -320,7 +320,11 @@ impl LibrarySource for FakeSource {
                 recent
             }
             Section::Liked => vec![liked_collection()],
-            Section::Search | Section::Settings | Section::Books | Section::Home => Vec::new(),
+            Section::Search
+            | Section::Settings
+            | Section::Books
+            | Section::Home
+            | Section::MyMusic => Vec::new(),
         })
     }
 

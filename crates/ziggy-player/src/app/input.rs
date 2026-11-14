@@ -34,6 +34,17 @@ pub enum Input {
     /// The player isn't signed in to Spotify: it waits to be picked in a Spotify app.
     PairingNeeded(bool),
     AirPlay(AirPlayUpdate),
+    Music(MusicUpdate),
+}
+
+/// What the My music service reports, beyond the albums and songs it sends as library updates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MusicUpdate {
+    /// Matches on the card for a search.
+    Search {
+        query: String,
+        results: SearchResults,
+    },
 }
 
 /// The Wi-Fi connection, as Settings shows it.
@@ -197,6 +208,8 @@ pub struct VoiceContext {
     pub items: Vec<VoiceItem>,
     /// This player's Home controls; empty without Home Assistant.
     pub home: Vec<VoiceHomeControl>,
+    /// False on a card-only player: searches find music on the card.
+    pub spotify: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -214,7 +227,7 @@ pub struct VoiceHomeControl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceItem {
     pub uri: String,
-    /// "playlist", "album", "artist" or "liked".
+    /// "playlist", "album", "artist", "liked", "album on this player" or "artist on this player".
     pub kind: &'static str,
     pub name: String,
     /// Owner of a playlist, artists of an album.
@@ -320,6 +333,10 @@ pub enum UiAction {
     SetBooksEnabled(bool),
     /// Settings: this player shows up as an AirPlay speaker, or not.
     SetAirPlay(bool),
+    /// Settings: turn My music on or off.
+    SetMyMusic(bool),
+    /// Settings: share the music folder on the network, or not.
+    SetMusicShare(bool),
     /// Settings: type the Audiobookshelf server address.
     EditBooksServer,
     /// Settings: sign in to Audiobookshelf (asks for username, then password).
@@ -543,6 +560,8 @@ pub enum Effect {
     /// Rejoin the Wi-Fi, then restart the player so Spotify connects afresh.
     Reconnect,
     AirPlay(AirPlayCommand),
+    /// Turn the shared music folder on or off.
+    MusicShare(bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]
