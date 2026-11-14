@@ -185,7 +185,7 @@
     <div class="hero-grid">
       <div>
         <h1>Ziggy <span>No apps, just music</span></h1>
-        <p class="lead">A touchscreen music player you build yourself. No apps. No distractions. Just music.</p>
+        <p class="lead">An open source touchscreen music player you build yourself.</p>
         <div class="buttons">
           <a class="btn btn-primary" href="#build">How to build one</a>
           <a class="btn btn-quiet" href="https://github.com/mberg/ziggy">Code on GitHub</a>
@@ -201,18 +201,18 @@
 <main>
 <section id="features">
   <div class="wrap">
-    <h2>Music without a phone</h2>
+    <h2>Music without the phone</h2>
     <p class="lead">We built Ziggy as a way for kids to discover and listen to music. No apps. No distractions. The way we did growing up.</p>
     <div class="features">
       <div class="feature">
         <div class="device"><img src="img/playlists.png" alt="A grid of playlists with their covers" loading="lazy" width="1600" height="960"></div>
-        <h3>Your Spotify library</h3>
-        <p>Playlists, albums, artists and liked songs, plus search.</p>
+        <h3>Your Spotify or MP3 collection</h3>
+        <p>Ziggy is designed to work with Spotify (requires Spotify Premium) or with MP3s kept on the player. Playlists, albums, artists and liked songs, plus search.</p>
       </div>
       <div class="feature">
         <div class="device"><img src="img/playlist.png" alt="A playlist's songs, with a large Play button" loading="lazy" width="1600" height="960"></div>
         <h3>Play it, heart it, save it</h3>
-        <p>All from the touchscreen.</p>
+        <p>Easily search and find the artists and albums you want. No AI suggestions.</p>
       </div>
     </div>
     <div class="more">
@@ -229,11 +229,10 @@
     <div>
       <span class="tag">Optional</span>
       <h2>Voice control</h2>
-      <p class="lead">"Ziggy, play Road Trip." Add a USB microphone and your own Google Gemini key.</p>
+      <p class="lead">"Ziggy, play Road Trip." Add a USB microphone and bring your own AI model.</p>
       <ul class="points">
-        <li><strong>No snooping by Apple or Alexa</strong>The wake word is heard on the Pi. No audio leaves the player until someone says "Ziggy". After that, the request goes to the AI account you own.</li>
-        <li><strong>You choose the AI model</strong>It uses Google Gemini unless you change it. Pick a different Gemini model with <code>ziggy config</code>.</li>
-        <li><strong>Ask for what you would tap</strong>Play something, pause, skip, change the volume, heart the song or set the sleep timer.</li>
+        <li><strong>You have complete control</strong>Select Gemini or your preferred model. No snooping by Apple or Alexa: the wake word is heard on the Pi, and no audio leaves the player until someone says "Ziggy".</li>
+        <li><strong>Truly smart search</strong>"Ziggy, play Paul Simon's first solo album." Fully benefit from your AI's intelligence.</li>
       </ul>
     </div>
     <div class="device"><img src="img/voice.png" alt="The Albums screen with a Listening indicator at the bottom" loading="lazy" width="1600" height="960"></div>
@@ -245,13 +244,10 @@
     <div>
       <span class="tag">Optional</span>
       <h2>Home Assistant</h2>
-      <p class="lead">Lights, fans and scenes on the same screen as the music.</p>
+      <p class="lead">Control your smart devices via Home Assistant.</p>
       <ul class="points">
-        <li><strong>Tiles and buttons</strong>Lights, switches and fans become tiles. Scenes and scripts become buttons.</li>
-        <li><strong>Each player has its own pages</strong>The kitchen player shows the kitchen's controls.</li>
-        <li><strong>By touch or by voice</strong>"Ziggy, turn off the lights."</li>
+        <li><strong>Ziggy is open source</strong>Add your own devices (e.g. Ring cameras) and actions.</li>
       </ul>
-      <p class="note">Ziggy is open source. Add your own actions.</p>
     </div>
     <div class="device"><img src="img/home.png" alt="Home Assistant tiles for lights, a fan and scene buttons" loading="lazy" width="1600" height="960"></div>
   </div>
@@ -260,7 +256,6 @@
 <section id="parts">
   <div class="wrap">
     <h2>Parts</h2>
-    <p class="lead">Everything plugs or screws together. No soldering.</p>
     <div class="parts">
       <div class="part">
         <span class="tag">Computer</span>
@@ -298,7 +293,7 @@
         <a href="https://www.pishop.us/product/mini-usb-microphone/">PiShop.us</a>
       </div>
     </div>
-    <p class="note">You also need a Spotify Premium account, and a Mac or Linux computer on the same Wi-Fi to run setup from.</p>
+    <p class="note">The parts total about $80–90. You also need a Spotify Premium account.</p>
   </div>
 </section>
 
@@ -327,7 +322,6 @@
 <section id="setup">
   <div class="wrap">
     <h2>Setting it up</h2>
-    <p class="lead">Three steps from your computer.</p>
     <ol class="setup">
       <li>
         <h3>Install the setup tool</h3>

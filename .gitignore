@@ -2,3 +2,4 @@
 /dev/state
 /secrets
 /.playwright-mcp
+/.wrangler
