@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::devconfig::{self, CONFIG_PATH, VERTEX_KEY_PATH, WAKE_MODEL};
+use crate::devconfig::{self, CONFIG_PATH, MUSIC_DIR, VERTEX_KEY_PATH, WAKE_MODEL};
 use crate::remote::Remote;
 
 pub const REPO: &str = "mberg/ziggy";
@@ -13,6 +13,7 @@ const PROVISION: &str = include_str!("../../../deploy/provision-remote.sh");
 const SERVICE: &str = include_str!("../../../deploy/ziggy-player.service");
 const WIFI_WATCH: &str = include_str!("../../../deploy/ziggy-wifi-watch");
 const WIFI_WATCH_SERVICE: &str = include_str!("../../../deploy/ziggy-wifi-watch.service");
+const SMB_CONF: &str = include_str!("../../../deploy/smb.conf");
 const WAKE_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models";
 
 /// Where the player binary comes from.
@@ -224,14 +225,106 @@ pub fn install_airplay(r: &dyn Remote) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What the player's service user may run through sudo, and nothing else: shutting the Pi down
-/// (Turn off) and rejoining the Wi-Fi (Reconnect), both from Settings.
-pub const PLAYER_SUDOERS: &str = "# Ziggy: the Turn off and Reconnect buttons in Settings.\n\
-    ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n\
-    ziggy-player ALL=(root) NOPASSWD: /usr/bin/nmcli --wait 45 device connect wlan0\n";
+/// Samba's settings: one share, "Music", for the music folder, and nothing else (no printers,
+/// no home folders). The player turns smbd on and off; nmbd (old Windows network browsing)
+/// stays off, and the share is announced over Bonjour so Finder lists it under Network.
+/// Without a password anyone on the network may use it; with one, only the `ziggy` user.
+pub fn smb_conf(password: bool) -> String {
+    if password {
+        SMB_CONF.replace(
+            "   guest ok = yes\n",
+            "   guest ok = no\n   valid users = ziggy\n",
+        )
+    } else {
+        SMB_CONF.to_string()
+    }
+}
 
-/// Installs the sudo rules for Turn off and Reconnect, checked with visudo first. Safe to run
-/// again.
+pub const SMB_CONF_PATH: &str = "/etc/samba/smb.conf";
+
+/// Music on the card: installs Samba and rsync if missing, makes the `ziggy-music` group and
+/// the music folder, and lets the SSH user write there (for `ziggy music add`). Writes Samba's
+/// settings, then starts smbd only if the config shares the folder; the player turns it on and
+/// off itself after that. Safe to run again; the provisioning script does the same first part.
+pub fn install_music(r: &dyn Remote, share: bool) -> anyhow::Result<()> {
+    r.run(&format!(
+        "if ! dpkg -s samba rsync >/dev/null 2>&1; then\n\
+           sudo apt-get update -qq\n\
+           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+             samba rsync >/dev/null\n\
+         fi\n\
+         getent group ziggy-music >/dev/null || sudo groupadd --system ziggy-music\n\
+         sudo usermod -aG ziggy-music ziggy-player\n\
+         sudo usermod -aG ziggy-music \"$(id -un)\"\n\
+         sudo install -d -m 2775 -o ziggy-player -g ziggy-music {MUSIC_DIR}"
+    ))
+    .context("setting up the music folder")?;
+    let password = has_share_password(r);
+    r.upload(smb_conf(password).as_bytes(), SMB_CONF_PATH, "644", None)?;
+    r.run(if share {
+        "sudo systemctl disable --now nmbd 2>/dev/null || true\n\
+         sudo systemctl enable --now smbd\n\
+         sudo systemctl try-reload-or-restart smbd"
+    } else {
+        "sudo systemctl disable --now smbd nmbd 2>/dev/null || true"
+    })
+    .context("setting up the shared music folder")?;
+    Ok(())
+}
+
+/// True when the shared folder has a password: the `ziggy` user is in Samba's own list.
+pub fn has_share_password(r: &dyn Remote) -> bool {
+    r.run("sudo pdbedit -L 2>/dev/null | grep -q '^ziggy:' && echo yes || true")
+        .is_ok_and(|out| out.trim() == "yes")
+}
+
+/// Sets a password on the shared folder, or removes it (None) so anyone on the network may use
+/// it. The password belongs to `ziggy`, a user that can't log in to the Pi; in Finder, connect
+/// as "ziggy" with it. Files saved through the share still belong to the player.
+pub fn set_share_password(r: &dyn Remote, password: Option<&str>) -> anyhow::Result<()> {
+    match password {
+        Some(password) => {
+            // smbpasswd reads the new password twice from stdin.
+            r.upload(
+                format!("{password}\n{password}\n").as_bytes(),
+                "/tmp/ziggy-share-password",
+                "600",
+                None,
+            )?;
+            r.run(
+                "trap 'sudo rm -f /tmp/ziggy-share-password' EXIT\n\
+                 id ziggy >/dev/null 2>&1 || sudo useradd --system --no-create-home \
+                   --shell /usr/sbin/nologin ziggy\n\
+                 sudo usermod -aG ziggy-music ziggy\n\
+                 sudo sh -c 'smbpasswd -s -a ziggy < /tmp/ziggy-share-password >/dev/null'",
+            )
+            .context("setting the password")?;
+        }
+        None => {
+            r.run("sudo smbpasswd -x ziggy >/dev/null 2>&1 || true")?;
+        }
+    }
+    r.upload(
+        smb_conf(password.is_some()).as_bytes(),
+        SMB_CONF_PATH,
+        "644",
+        None,
+    )?;
+    r.run("sudo systemctl try-reload-or-restart smbd")?;
+    Ok(())
+}
+
+/// What the player's service user may run through sudo, and nothing else: shutting the Pi down
+/// (Turn off) and rejoining the Wi-Fi (Reconnect), both from Settings, and starting or stopping
+/// the shared music folder (Samba's smbd), from Settings and when the player starts.
+pub const PLAYER_SUDOERS: &str = "# Ziggy: the Turn off, Reconnect and Shared folder settings.\n\
+    ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n\
+    ziggy-player ALL=(root) NOPASSWD: /usr/bin/nmcli --wait 45 device connect wlan0\n\
+    ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now smbd\n\
+    ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now smbd\n";
+
+/// Installs the sudo rules for Turn off, Reconnect and the shared folder, checked with visudo
+/// first. Safe to run again.
 pub fn allow_player_commands(r: &dyn Remote) -> anyhow::Result<()> {
     r.upload(PLAYER_SUDOERS.as_bytes(), "/tmp/ziggy-power", "440", None)?;
     r.run(
@@ -239,7 +332,7 @@ pub fn allow_player_commands(r: &dyn Remote) -> anyhow::Result<()> {
          && sudo install -m 440 /tmp/ziggy-power /etc/sudoers.d/020_ziggy-player-power; \
          rc=$?; sudo rm -f /tmp/ziggy-power; exit $rc",
     )
-    .context("allowing the Turn off and Reconnect buttons")?;
+    .context("allowing the Turn off, Reconnect and Shared folder settings")?;
     Ok(())
 }
 
@@ -397,11 +490,17 @@ pub fn is_paired(r: &dyn Remote) -> bool {
     .is_ok_and(|out| out.contains("PAIRED"))
 }
 
-/// True for a player from before Soloist: BlueALSA instead of PipeWire, or no API key yet.
-pub fn needs_soloist_migration(r: &dyn Remote) -> bool {
+/// True for a player from before Soloist: BlueALSA instead of PipeWire, or, with Spotify, no
+/// API key yet. A card-only player needs no key.
+pub fn needs_soloist_migration(r: &dyn Remote, spotify: bool) -> bool {
+    let no_key = if spotify {
+        format!(" || ! sudo test -s {SOLOIST_KEY_PATH}")
+    } else {
+        String::new()
+    };
     r.run(&format!(
-        "if ! command -v pw-dump >/dev/null || systemctl is-enabled bluealsa >/dev/null 2>&1 \
-           || ! sudo test -s {SOLOIST_KEY_PATH}; then echo MIGRATE; fi"
+        "if ! command -v pw-dump >/dev/null || systemctl is-enabled bluealsa >/dev/null 2>&1{no_key}; \
+         then echo MIGRATE; fi"
     ))
     .is_ok_and(|out| out.contains("MIGRATE"))
 }
@@ -491,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_off_and_reconnect_are_the_only_things_the_player_may_sudo() {
+    fn turn_off_reconnect_and_sharing_are_the_only_things_the_player_may_sudo() {
         let r = FakeRemote::default();
         allow_player_commands(&r).unwrap();
         let rule = r.file("/tmp/ziggy-power").unwrap();
@@ -499,8 +598,97 @@ mod tests {
         assert!(rule.contains(
             "ziggy-player ALL=(root) NOPASSWD: /usr/bin/nmcli --wait 45 device connect wlan0\n"
         ));
-        assert_eq!(rule.lines().filter(|l| !l.starts_with('#')).count(), 2);
+        for line in [
+            "ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now smbd\n",
+            "ziggy-player ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now smbd\n",
+        ] {
+            assert!(rule.contains(line), "{rule}");
+        }
+        assert_eq!(rule.lines().filter(|l| !l.starts_with('#')).count(), 4);
         assert!(r.all_scripts().contains("visudo -cf /tmp/ziggy-power"));
+    }
+
+    #[test]
+    fn the_music_folder_is_made_and_sharing_stays_off_unless_asked() {
+        let r = FakeRemote::default();
+        install_music(&r, false).unwrap();
+        let scripts = r.all_scripts();
+        for part in [
+            "if ! dpkg -s samba rsync",
+            "--no-install-recommends samba rsync",
+            "groupadd --system ziggy-music",
+            "usermod -aG ziggy-music ziggy-player",
+            "usermod -aG ziggy-music \"$(id -un)\"",
+            "install -d -m 2775 -o ziggy-player -g ziggy-music /var/lib/ziggy-music",
+            "systemctl disable --now smbd nmbd",
+        ] {
+            assert!(scripts.contains(part), "{part}\n{scripts}");
+        }
+        assert!(!scripts.contains("enable --now smbd"));
+        let conf = r.file(SMB_CONF_PATH).unwrap();
+        assert!(conf.contains("guest ok = yes"), "{conf}");
+
+        let r = FakeRemote::default();
+        install_music(&r, true).unwrap();
+        assert!(r.all_scripts().contains("systemctl enable --now smbd"));
+        assert!(r.all_scripts().contains("systemctl disable --now nmbd"));
+    }
+
+    #[test]
+    fn samba_shares_only_the_music_folder() {
+        let conf = smb_conf(false);
+        for line in [
+            "[Music]",
+            "path = /var/lib/ziggy-music",
+            "map to guest = Bad User",
+            "guest ok = yes",
+            "force user = ziggy-player",
+            "force group = ziggy-music",
+            "create mask = 0664",
+            "directory mask = 2775",
+            "server min protocol = SMB2",
+            "multicast dns register = yes",
+            "load printers = no",
+        ] {
+            assert!(conf.lines().any(|l| l.trim() == line), "{line}\n{conf}");
+        }
+        // Two sections: [global] and [Music]; no printers or home folders.
+        assert_eq!(conf.lines().filter(|l| l.starts_with('[')).count(), 2);
+        assert!(conf.contains(&format!("path = {MUSIC_DIR}\n")));
+        let locked = smb_conf(true);
+        assert!(locked.contains("   guest ok = no\n   valid users = ziggy\n"));
+        assert!(!locked.contains("guest ok = yes"));
+    }
+
+    #[test]
+    fn a_share_password_is_set_and_removed() {
+        let r = FakeRemote::default();
+        set_share_password(&r, Some("tunes")).unwrap();
+        assert_eq!(
+            r.file("/tmp/ziggy-share-password").as_deref(),
+            Some("tunes\ntunes\n")
+        );
+        let scripts = r.all_scripts();
+        assert!(scripts.contains("smbpasswd -s -a ziggy"), "{scripts}");
+        assert!(scripts.contains("trap 'sudo rm -f /tmp/ziggy-share-password' EXIT"));
+        assert!(
+            r.file(SMB_CONF_PATH)
+                .unwrap()
+                .contains("valid users = ziggy")
+        );
+        set_share_password(&r, None).unwrap();
+        assert!(r.all_scripts().contains("smbpasswd -x ziggy"));
+        assert!(r.file(SMB_CONF_PATH).unwrap().contains("guest ok = yes"));
+    }
+
+    #[test]
+    fn a_card_only_player_needs_no_soloist_key() {
+        let r = FakeRemote::default();
+        needs_soloist_migration(&r, true);
+        needs_soloist_migration(&r, false);
+        let scripts = r.scripts.borrow();
+        assert!(scripts[0].contains(SOLOIST_KEY_PATH));
+        assert!(!scripts[1].contains(SOLOIST_KEY_PATH));
     }
 
     #[test]
@@ -612,6 +800,9 @@ mod tests {
             device_name: "Den".into(),
             audiobookshelf_url: None,
             voice: None,
+            spotify: true,
+            my_music: false,
+            music_share: false,
         });
         write_config(&r, &t).unwrap();
         assert_eq!(

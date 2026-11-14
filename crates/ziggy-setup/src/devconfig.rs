@@ -9,6 +9,9 @@ pub const VERTEX_KEY_PATH: &str = "/var/lib/ziggy/vertex-key.json";
 pub const HA_TOKEN_PATH: &str = "/var/lib/ziggy/ha-token";
 /// The wake-word model, downloaded onto the device when voice is turned on.
 pub const WAKE_MODEL: &str = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
+/// The music on the card: `ziggy music` and the shared folder copy into it. It's the player's
+/// default, so the config doesn't name it.
+pub const MUSIC_DIR: &str = "/var/lib/ziggy-music";
 
 pub fn wake_model_dir() -> String {
     format!("{STATE_DIR}/models/{WAKE_MODEL}")
@@ -35,6 +38,12 @@ pub struct Choices {
     pub device_name: String,
     pub audiobookshelf_url: Option<String>,
     pub voice: Option<Voice>,
+    /// False for a card-only player, with no Spotify account.
+    pub spotify: bool,
+    /// My music: music files on the player's card. Always on for a card-only player.
+    pub my_music: bool,
+    /// The music folder is shared on the network.
+    pub music_share: bool,
 }
 
 pub fn new_config(choices: &Choices) -> Table {
@@ -52,7 +61,32 @@ pub fn new_config(choices: &Choices) -> Table {
     if let Some(voice) = &choices.voice {
         set_voice(&mut t, voice);
     }
+    if !choices.spotify {
+        t.insert("spotify".into(), Value::Boolean(false));
+    }
+    t.insert(
+        "my_music".into(),
+        Value::Boolean(choices.my_music || !choices.spotify),
+    );
+    t.insert("music_share".into(), Value::Boolean(choices.music_share));
     t
+}
+
+/// Whether My music is on: when the config says so, and always on a card-only player.
+pub fn my_music_on(t: &Table) -> bool {
+    !spotify_on(t) || t.get("my_music").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// False on a card-only player. Spotify is on unless the config says otherwise.
+pub fn spotify_on(t: &Table) -> bool {
+    t.get("spotify").and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// Whether the music folder is shared on the network. Off unless the config says so.
+pub fn music_share_on(t: &Table) -> bool {
+    t.get("music_share")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub fn set_voice(t: &mut Table, voice: &Voice) {
@@ -110,10 +144,12 @@ pub enum Setting {
     WakeSensitivity,
     Microphone,
     GeminiModel,
+    MyMusic,
+    MusicShare,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 11] = [
+    pub const ALL: [Setting; 13] = [
         Setting::DeviceName,
         Setting::Volume,
         Setting::DimAfter,
@@ -125,6 +161,8 @@ impl Setting {
         Setting::WakeSensitivity,
         Setting::Microphone,
         Setting::GeminiModel,
+        Setting::MyMusic,
+        Setting::MusicShare,
     ];
 
     pub fn label(self) -> &'static str {
@@ -140,6 +178,8 @@ impl Setting {
             Setting::WakeSensitivity => "Wake word sensitivity",
             Setting::Microphone => "Microphone",
             Setting::GeminiModel => "Gemini model",
+            Setting::MyMusic => "My music (files on the card)",
+            Setting::MusicShare => "Shared music folder",
         }
     }
 
@@ -165,6 +205,12 @@ impl Setting {
             Setting::Voice if !voice_on => "off".into(),
             Setting::Voice if t.contains_key("vertex_key_file") => "on (Vertex AI)".into(),
             Setting::Voice => "on (Gemini API key)".into(),
+            Setting::MyMusic if !spotify_on(t) => "on (no Spotify)".into(),
+            Setting::MyMusic if my_music_on(t) => "on".into(),
+            Setting::MyMusic => "off".into(),
+            Setting::MusicShare if !my_music_on(t) => "(My music is off)".into(),
+            Setting::MusicShare if music_share_on(t) => "on".into(),
+            Setting::MusicShare => "off".into(),
             _ if !voice_on => "(voice is off)".into(),
             Setting::WakePhrase => s("wake_phrase").unwrap_or_else(|| "ziggy".into()),
             Setting::WakeSensitivity => match t.get("wake_threshold").and_then(Value::as_float) {
@@ -189,7 +235,9 @@ impl Setting {
             Setting::WakeSensitivity => "wake_threshold",
             Setting::Microphone => "microphone",
             Setting::GeminiModel => "gemini_model",
-            Setting::Voice | Setting::HomeAssistant => return None,
+            Setting::Voice | Setting::HomeAssistant | Setting::MyMusic | Setting::MusicShare => {
+                return None;
+            }
         })
     }
 }
@@ -279,6 +327,9 @@ mod tests {
                 wake_phrase: "ziggy".into(),
                 gemini: Gemini::Vertex,
             }),
+            spotify: true,
+            my_music: false,
+            music_share: false,
         }
     }
 
@@ -291,6 +342,60 @@ mod tests {
         assert!(config.contains("vertex_key_file = \"/var/lib/ziggy/vertex-key.json\""));
         assert!(config.contains(&format!("voice_model_dir = \"{}\"", wake_model_dir())));
         check(&parse(&text).unwrap()).unwrap();
+        let player = ziggy_player::config::Config::parse(&text).unwrap();
+        assert!(player.spotify);
+        assert!(!player.music_share);
+        assert!(!player.my_music, "My music is off on a Spotify player");
+        assert!(!config.contains("spotify ="), "Spotify is on by default");
+        assert!(!my_music_on(&parse(&text).unwrap()));
+        assert_eq!(Setting::MyMusic.show(&new_config(&choices())), "off");
+        assert_eq!(
+            Setting::MusicShare.show(&new_config(&choices())),
+            "(My music is off)"
+        );
+        let with_music = new_config(&Choices {
+            my_music: true,
+            ..choices()
+        });
+        assert!(my_music_on(&with_music));
+        assert!(
+            ziggy_player::config::Config::parse(&render(&with_music))
+                .unwrap()
+                .my_music
+        );
+    }
+
+    /// A card-only player, with the shared folder on.
+    #[test]
+    fn a_card_only_config_is_one_the_player_accepts() {
+        let mut t = new_config(&Choices {
+            spotify: false,
+            music_share: true,
+            ..choices()
+        });
+        let text = render(&t);
+        assert!(text.contains("spotify = false"), "{text}");
+        assert!(text.contains("music_share = true"), "{text}");
+        assert!(
+            text.contains("my_music = true"),
+            "always on without Spotify"
+        );
+        let player = ziggy_player::config::Config::parse(&text).unwrap();
+        assert!(!player.spotify);
+        assert!(player.music_share);
+        assert_eq!(
+            player.music_dir(),
+            std::path::PathBuf::from(MUSIC_DIR),
+            "setup and the player agree on the music folder"
+        );
+        assert!(!spotify_on(&t));
+        assert!(my_music_on(&t));
+        assert_eq!(Setting::MyMusic.show(&t), "on (no Spotify)");
+        assert_eq!(Setting::MusicShare.show(&t), "on");
+        t.insert("music_share".into(), Value::Boolean(false));
+        assert_eq!(Setting::MusicShare.show(&t), "off");
+        // Setup again with Spotify: the key goes, so Spotify is on.
+        assert!(spotify_on(&new_config(&choices())));
     }
 
     /// Loads it with the player's own config parser, which rejects unknown keys.
