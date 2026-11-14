@@ -73,6 +73,22 @@ fn instructions(context: &VoiceContext) -> String {
         Some(track) => text.push_str(&format!("Paused: {track}.\n")),
         None => text.push_str("Nothing is playing.\n"),
     }
+    if !context.spotify {
+        text.push_str(
+            "This player has no Spotify: everything is music files on the player, and \
+             search_and_play searches those.\n",
+        );
+    } else if context
+        .items
+        .iter()
+        .any(|i| i.kind.ends_with("on this player"))
+    {
+        text.push_str(
+            "Items \"on this player\" are music files on the player itself. Play one only when \
+             the listener asks for their own music or music on the player (\"from my music\"); \
+             otherwise prefer Spotify's.\n",
+        );
+    }
     text.push_str(&format!(
         "Volume: {}%.\n\nLibrary (id | kind | name | by):\n",
         context.volume
@@ -393,6 +409,7 @@ mod tests {
             now_playing: Some("Graceland by Paul Simon".into()),
             playing: true,
             volume: 60,
+            spotify: true,
             items: vec![VoiceItem {
                 uri: "spotify:playlist:road".into(),
                 kind: "playlist",

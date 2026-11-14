@@ -1,5 +1,6 @@
 //! The guided commands: `ziggy setup` walks through everything, one question at a time;
 //! `ziggy config`, `update`, `status`, `logs` and `signin` look after a player afterwards.
+//! `ziggy music` (music.rs) copies music onto it.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -26,11 +27,11 @@ fn step(n: usize, total: usize, title: &str) {
     );
 }
 
-fn say(text: &str) {
+pub(crate) fn say(text: &str) {
     println!("{text}");
 }
 
-fn ok(text: &str) {
+pub(crate) fn ok(text: &str) {
     println!("{} {text}", style("✓").green());
 }
 
@@ -41,7 +42,7 @@ fn ask(prompt: &str, default: &str) -> anyhow::Result<String> {
         .interact_text()?)
 }
 
-fn yes(prompt: &str, default: bool) -> anyhow::Result<bool> {
+pub(crate) fn yes(prompt: &str, default: bool) -> anyhow::Result<bool> {
     Ok(Confirm::with_theme(&theme())
         .with_prompt(prompt)
         .default(default)
@@ -383,15 +384,27 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let device_name = ask(
-        "What should this player be called? (Spotify shows this name)",
+        "What should this player be called? (Spotify and AirPlay show this name)",
         &current_name.unwrap_or_else(|| name_from_host(&ssh.host)),
     )?;
 
     step(3, STEPS, "Spotify");
-    let client_id = spotify_client_id()?;
+    let spotify_on = yes(
+        "Use Spotify on this player? (needs Spotify Premium)",
+        existing.as_ref().is_none_or(devconfig::spotify_on),
+    )?;
     let spotify_dir = store::device_dir(&ssh.host)?;
-    library_sign_in(&spotify_dir, &client_id).await?;
-    let soloist_key = soloist_key()?;
+    let soloist_key = if spotify_on {
+        let client_id = spotify_client_id()?;
+        library_sign_in(&spotify_dir, &client_id).await?;
+        Some(soloist_key()?)
+    } else {
+        say(
+            "This player will play only music on its SD card. To add Spotify later, run\n\
+             `ziggy setup` again and answer yes.",
+        );
+        None
+    };
 
     step(4, STEPS, "Extras");
     let current = |key: &str| {
@@ -402,6 +415,22 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
             .map(str::to_string)
     };
     let audiobookshelf_url = audiobookshelf(current("audiobookshelf_url").as_deref())?;
+    // A card-only player always has My music.
+    let my_music = !spotify_on
+        || yes(
+            "Also play music files from the player's card (My music)?",
+            existing.as_ref().is_some_and(devconfig::my_music_on),
+        )?;
+    let music_share = my_music && {
+        say(
+            "Music can be copied onto the player from Finder or Windows, through a shared folder.\n\
+             While it's shared, anyone on your Wi-Fi can add or delete music.",
+        );
+        yes(
+            "Share the player's music folder on your network?",
+            existing.as_ref().is_some_and(devconfig::music_share_on),
+        )?
+    };
     let (voice, vertex_key) = if yes(
         "Turn on voice control? (needs a USB microphone)",
         current("voice_model_dir").is_some(),
@@ -419,6 +448,7 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
     let reboot = install::provision(&ssh)?;
     install::allow_player_commands(&ssh)?;
     install::watch_wifi(&ssh)?;
+    install::install_music(&ssh, music_share)?;
     ok("Pi prepared");
     say("Installing the player…");
     install::install_player(&ssh, &options.player)?;
@@ -432,14 +462,22 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         device_name: device_name.clone(),
         audiobookshelf_url: audiobookshelf_url.clone(),
         voice: voice.clone(),
+        spotify: spotify_on,
+        my_music,
+        music_share,
     });
     devconfig::keep_home_assistant(&mut config, existing.as_ref());
     install::write_config(&ssh, &config)?;
     install::install_secrets(
         &ssh,
         &Secrets {
-            spotify_dir: &spotify_dir,
-            soloist_key: Some(&soloist_key),
+            // A card-only player gets no Spotify sign-in.
+            spotify_dir: &if spotify_on {
+                spotify_dir.clone()
+            } else {
+                spotify_dir.join("none")
+            },
+            soloist_key: soloist_key.as_deref(),
             vertex_key: vertex_key.as_deref(),
             ha_token: None,
         },
@@ -453,7 +491,7 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         let _ = install::restart(&ssh)?;
     }
     let running = report_running(&ssh)?;
-    if running {
+    if running && spotify_on {
         pair(
             &ssh,
             &install::device_name(&ssh).unwrap_or_else(|| device_name.clone()),
@@ -469,6 +507,7 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
          • Settings → Speaker pairs a Bluetooth speaker or picks a Sonos room.{}\n\n\
          From this computer:\n\
          • ziggy config {host}   change settings\n\
+         {music}\
          • ziggy update {host}   install the newest player\n\
          • ziggy status {host}   check it's running\n\
          • ziggy logs {host}     see what it's doing",
@@ -477,7 +516,15 @@ pub async fn setup(options: SetupOptions) -> anyhow::Result<()> {
         } else {
             ""
         },
-        host = ssh.host
+        host = ssh.host,
+        music = if my_music {
+            format!(
+                "• ziggy music add <folders> {}   copy music onto it\n",
+                ssh.host
+            )
+        } else {
+            String::new()
+        },
     ));
     if !running {
         bail!("the player didn't start; see the messages above");
@@ -495,6 +542,7 @@ pub fn config(host: &str) -> anyhow::Result<()> {
     let mut ha_token: Option<String> = None;
     let mut remove_ha_token = false;
     let mut model_needed = false;
+    let mut music_needed = false;
     let mut changed = false;
     loop {
         let mut items: Vec<String> = Setting::ALL
@@ -608,6 +656,37 @@ pub fn config(host: &str) -> anyhow::Result<()> {
                     }
                 }
             }
+            Setting::MyMusic => {
+                if !devconfig::spotify_on(&t) {
+                    say("My music is always on for a player without Spotify.");
+                    continue;
+                }
+                let on = yes(
+                    "Play music files from the player's card (My music)?",
+                    devconfig::my_music_on(&t),
+                )?;
+                t.insert("my_music".into(), toml::Value::Boolean(on));
+                if !on {
+                    t.insert("music_share".into(), toml::Value::Boolean(false));
+                }
+                music_needed = true;
+            }
+            Setting::MusicShare if !devconfig::my_music_on(&t) => {
+                say("Turn My music on first.");
+                continue;
+            }
+            Setting::MusicShare => {
+                say(
+                    "While it's shared, anyone on your Wi-Fi can add or delete music.\n\
+                     `ziggy music share-password` sets a password.",
+                );
+                let share = yes(
+                    "Share the music folder on your network?",
+                    devconfig::music_share_on(&t),
+                )?;
+                t.insert("music_share".into(), toml::Value::Boolean(share));
+                music_needed = true;
+            }
             Setting::Volume | Setting::DimAfter | Setting::OffAfter => {
                 let key = setting.key().expect("a key");
                 let (prompt, scale) = match setting {
@@ -681,6 +760,10 @@ pub fn config(host: &str) -> anyhow::Result<()> {
     if remove_ha_token {
         install::remove_ha_token(&ssh)?;
     }
+    if music_needed {
+        // Installs Samba on a player set up before the shared folder.
+        install::install_music(&ssh, devconfig::music_share_on(&t))?;
+    }
     install::write_config(&ssh, &t)?;
     say("Saved. Restarting the player…");
     let (running, logs) = install::restart(&ssh)?;
@@ -750,7 +833,7 @@ fn home_assistant_url<'a>(
         .or_else(|| v4.map(|ip| format!("http://{ip}:{port}")))
 }
 
-fn connect(host: &str) -> anyhow::Result<Ssh> {
+pub(crate) fn connect(host: &str) -> anyhow::Result<Ssh> {
     let ssh = Ssh::new(host);
     if !ssh.reachable() {
         bail!("can't reach {host} over SSH; is it on? Try `ssh {host}`");
@@ -766,8 +849,11 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
         install::provision(&ssh)?;
         ok("Moved. Settings, sign-in and speaker are kept");
     }
-    let migrate = install::needs_soloist_migration(&ssh);
-    if migrate {
+    let config = install::read_config(&ssh).ok().flatten();
+    let spotify_on = config.as_ref().is_none_or(devconfig::spotify_on);
+    let music_share = config.as_ref().is_some_and(devconfig::music_share_on);
+    let migrate = install::needs_soloist_migration(&ssh, spotify_on);
+    if migrate && spotify_on {
         say("This player still uses the old Spotify player. Switching it to Spotify Soloist…");
         let key = soloist_key()?;
         install::provision(&ssh)?;
@@ -781,11 +867,16 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
             },
         )?;
         ok("Switched to PipeWire, with the Soloist key copied");
+    } else if migrate {
+        say("This player still uses the old sound setup. Switching it to PipeWire…");
+        install::provision(&ssh)?;
+        ok("Switched to PipeWire");
     }
     install::keep_logs(&ssh)?;
     install::allow_player_commands(&ssh)?;
     install::watch_wifi(&ssh)?;
     install::install_airplay(&ssh)?;
+    install::install_music(&ssh, music_share)?;
     install::install_service(&ssh)?;
     say("Installing the player…");
     install::install_player(&ssh, &player)?;
@@ -800,7 +891,7 @@ pub fn update(host: &str, player: PlayerSource) -> anyhow::Result<()> {
         bail!("the player didn't start:\n{logs}");
     }
     ok("The player is running");
-    if migrate {
+    if migrate && spotify_on {
         let name = install::device_name(&ssh).unwrap_or_else(|| name_from_host(&ssh.host));
         // Soloist downloads and starts on the player's first run; give it a moment.
         std::thread::sleep(Duration::from_secs(20));
@@ -858,6 +949,16 @@ pub fn logs(host: &str) -> anyhow::Result<()> {
 /// developer app, then playback by picking the player in a Spotify app.
 pub async fn signin(host: &str) -> anyhow::Result<()> {
     let ssh = connect(host)?;
+    let card_only = install::read_config(&ssh)
+        .ok()
+        .flatten()
+        .is_some_and(|t| !devconfig::spotify_on(&t));
+    if card_only {
+        bail!(
+            "Spotify isn't set up on this player; it plays only the music on its SD card.\n\
+             To add Spotify, run `ziggy setup {host}` and answer yes to Spotify"
+        );
+    }
     let client_id = spotify_client_id()?;
     let dir = store::device_dir(&ssh.host)?;
     // A fresh sign-in, not the saved one.

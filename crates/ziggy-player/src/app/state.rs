@@ -101,6 +101,8 @@ pub struct SearchState {
     pub edited_ms: u64,
     pub results: Slot<SearchResults>,
     pub filter: SearchFilter,
+    /// Matches on the card, with the query they belong to.
+    pub local: Option<(String, SearchResults)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,4 +390,17 @@ pub struct AppState {
     pub recent_songs: bool,
     /// When the sleep timer pauses playback, if one is set.
     pub sleep_ends_ms: Option<u64>,
+    /// False on a card-only player: no Spotify sections, sign-in or searches.
+    pub spotify: bool,
+    /// My music shows and the card is read.
+    pub my_music: bool,
+    /// My music: the shared folder can be turned on here, and whether it is.
+    pub music_share: MusicShare,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MusicShare {
+    /// The Pi has Samba installed, so Settings offers the switch.
+    pub available: bool,
+    pub on: bool,
 }

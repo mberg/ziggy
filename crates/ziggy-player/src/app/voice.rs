@@ -105,7 +105,7 @@ impl Core {
                     self.notify(Notice::Voice("Didn't catch that".into()), now_ms);
                     return;
                 };
-                if item.kind == "artist" {
+                if item.kind.starts_with("artist") {
                     self.on_ui(UiAction::PlayArtist(uri), now_ms, fx);
                 } else {
                     let shuffle = false;
@@ -225,10 +225,31 @@ impl Core {
         if wanted != query {
             return;
         }
-        self.state.voice.pending_search = None;
-        let Some(results) = self.state.search.results.data.clone() else {
+        // Spotify first; the card when Spotify has nothing of that kind, or there's no Spotify.
+        let spotify = self
+            .state
+            .search
+            .results
+            .data
+            .clone()
+            .filter(|r| has_kind(r, kind));
+        let card = self
+            .state
+            .search
+            .local
+            .as_ref()
+            .filter(|(q, r)| q == query && has_kind(r, kind))
+            .map(|(_, r)| Arc::new(r.clone()));
+        let Some(results) = spotify.or(card) else {
+            if self.state.search.results.data.is_none() && self.cfg.spotify {
+                // Spotify hasn't answered yet.
+                return;
+            }
+            self.state.voice.pending_search = None;
+            self.notify(Notice::Voice(format!("Couldn't find {query}")), now_ms);
             return;
         };
+        self.state.voice.pending_search = None;
         let action = match kind {
             SearchKind::Song => results
                 .tracks
@@ -268,7 +289,11 @@ impl Core {
         }
     }
 
-    pub(super) fn voice_search_failed(&mut self, query: &str) {
+    pub(super) fn voice_search_failed(&mut self, query: &str, now_ms: u64, fx: &mut Vec<Effect>) {
+        // Spotify can't search now: the card may still have it.
+        if self.state.my_music {
+            self.voice_search_results(query, now_ms, fx);
+        }
         if self
             .state
             .voice
@@ -289,6 +314,7 @@ impl Core {
             Section::Artists,
             Section::Liked,
             Section::Recent,
+            Section::MyMusic,
         ];
         let collections = sections
             .iter()
@@ -305,11 +331,13 @@ impl Core {
             }
             items.push(VoiceItem {
                 uri: c.uri.clone(),
-                kind: match c.kind {
-                    CollectionKind::Playlist => "playlist",
-                    CollectionKind::Album => "album",
-                    CollectionKind::Liked => "liked",
-                    CollectionKind::Artist => "artist",
+                kind: match (c.kind, crate::music::index::is_local(&c.uri)) {
+                    (CollectionKind::Album, true) => "album on this player",
+                    (CollectionKind::Artist, true) => "artist on this player",
+                    (CollectionKind::Playlist, _) => "playlist",
+                    (CollectionKind::Album, _) => "album",
+                    (CollectionKind::Liked, _) => "liked",
+                    (CollectionKind::Artist, _) => "artist",
                 },
                 name: c.name.clone(),
                 by: c.subtitle.clone(),
@@ -324,8 +352,19 @@ impl Core {
             playing: pb.status == PlayStatus::Playing,
             volume: self.state.voice.ducked_from.unwrap_or(pb.volume),
             items,
+            spotify: self.cfg.spotify,
             home: self.home_voice_controls(),
         }
+    }
+}
+
+/// Whether search results have something of the kind asked for.
+fn has_kind(r: &crate::model::SearchResults, kind: SearchKind) -> bool {
+    match kind {
+        SearchKind::Song => !r.tracks.is_empty(),
+        SearchKind::Artist => !r.artists.is_empty(),
+        SearchKind::Album => !r.albums.is_empty(),
+        SearchKind::Playlist => !r.playlists.is_empty(),
     }
 }
 

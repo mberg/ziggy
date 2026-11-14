@@ -19,6 +19,10 @@ pub(crate) fn config() -> CoreConfig {
         voice: true,
         home: Vec::new(),
         airplay: false,
+        spotify: true,
+        my_music: false,
+        music_share_available: false,
+        music_share_default: false,
     }
 }
 
@@ -2418,4 +2422,227 @@ fn reconnect_rejoins_the_wifi_once() {
         crate::view::build(c.state()).settings.message,
         "Reconnecting to the Wi-Fi and Spotify…"
     );
+}
+
+// ---- My music ----
+
+fn local_track(n: u32) -> Track {
+    Track {
+        uri: format!("local:track:t{n}"),
+        name: format!("Card song {n}"),
+        artists: "Card band".into(),
+        album: "Card album".into(),
+        image_url: None,
+        duration_ms: 120_000,
+        album_uri: Some("local:album:a".into()),
+        artist_uri: Some("local:artist:b".into()),
+    }
+}
+
+fn asks_library(fx: &[Effect], wanted: impl Fn(&LibraryRequest) -> bool) -> bool {
+    fx.iter()
+        .any(|e| matches!(e, Effect::Library(r) if wanted(r)))
+}
+
+#[test]
+fn my_music_is_off_unless_turned_on() {
+    let (core, fx) = Core::new(config(), 0);
+    assert!(!core.state().my_music);
+    assert!(!asks_library(&fx, |r| *r == LibraryRequest::Section(Section::MyMusic)));
+    assert!(!crate::view::build(core.state()).my_music_enabled);
+
+    let mut cfg = config();
+    cfg.my_music = true;
+    let (core, fx) = Core::new(cfg, 0);
+    assert!(asks_library(&fx, |r| *r == LibraryRequest::Section(Section::MyMusic)));
+    assert!(asks_library(&fx, |r| *r == LibraryRequest::Section(Section::Playlists)));
+    let v = crate::view::build(core.state());
+    assert!(v.my_music_enabled && v.spotify);
+}
+
+#[test]
+fn a_card_only_player_opens_on_my_music_and_never_asks_spotify() {
+    let mut cfg = config();
+    cfg.spotify = false;
+    let (mut core, fx) = Core::new(cfg, 0);
+    assert_eq!(core.state().screen, Screen::Grid(Section::MyMusic));
+    assert!(core.state().my_music, "always on without Spotify");
+    assert!(!asks_library(&fx, |r| matches!(
+        r,
+        LibraryRequest::Account | LibraryRequest::Tracks { .. }
+    )));
+    assert!(!asks_library(&fx, |r| *r == LibraryRequest::Section(Section::Albums)));
+    // No history yet: Recent is empty rather than waiting for Spotify.
+    let fx = core.handle(Input::HistoryRecent(Vec::new()), 0);
+    assert!(fx.is_empty());
+    assert_eq!(
+        core.state().sections[&Section::Recent]
+            .data
+            .as_deref()
+            .map(Vec::len),
+        Some(0)
+    );
+    // My music can't be turned off: there'd be nothing left.
+    assert!(core.handle(ui(UiAction::SetMyMusic(false)), 0).is_empty());
+    let v = crate::view::build(core.state());
+    assert!(!v.spotify && v.my_music_enabled);
+}
+
+#[test]
+fn turning_my_music_on_saves_and_restarts() {
+    let mut core = core();
+    let fx = core.handle(ui(UiAction::SetMyMusic(true)), 0);
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::ApplySettings(s) if s.my_music == Some(true)
+    )));
+    assert!(core.state().device.restarting);
+}
+
+#[test]
+fn the_shared_folder_switch_needs_samba_and_my_music() {
+    let mut cfg = config();
+    cfg.my_music = true;
+    let mut core = Core::new(cfg.clone(), 0).0;
+    assert!(core.handle(ui(UiAction::SetMusicShare(true)), 0).is_empty());
+
+    cfg.music_share_available = true;
+    let (mut core, fx) = Core::new(cfg, 0);
+    // Every start puts the Pi's sharing in line with Settings.
+    assert!(fx.contains(&Effect::MusicShare(false)));
+    let fx = core.handle(ui(UiAction::SetMusicShare(true)), 0);
+    assert!(fx.contains(&Effect::MusicShare(true)));
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::SaveSettings(s) if s.music_share == Some(true)
+    )));
+    assert!(crate::view::build(core.state()).settings.music_share_on);
+}
+
+#[test]
+fn a_song_from_the_card_is_marked_and_cant_be_liked() {
+    let mut cfg = config();
+    cfg.my_music = true;
+    let mut core = Core::new(cfg, 0).0;
+    core.handle(Input::Player(PlayerUpdate::TrackChanged(local_track(1))), 0);
+    let now = crate::view::build(core.state()).now;
+    assert!(now.local);
+    assert_eq!(
+        now.track_uri, "",
+        "no heart or add for a song from the card"
+    );
+    assert!(now.has_artist);
+}
+
+#[test]
+fn search_shows_matches_on_the_card() {
+    let mut cfg = config();
+    cfg.my_music = true;
+    let mut core = Core::new(cfg, 0).0;
+    core.handle(ui(UiAction::ShowSection(Section::Search)), 0);
+    core.handle(ui(UiAction::KeyPressed("card".into())), 0);
+    let fx = core.handle(Input::Tick, 1_000);
+    assert!(asks_library(
+        &fx,
+        |r| matches!(r, LibraryRequest::Search(q) if q == "card")
+    ));
+    core.handle(
+        Input::Music(MusicUpdate::Search {
+            query: "card".into(),
+            results: SearchResults {
+                tracks: vec![local_track(2)],
+                ..Default::default()
+            },
+        }),
+        1_100,
+    );
+    let rows = crate::view::build(core.state()).search.rows;
+    let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+    assert!(titles.contains(&"On this player"), "{titles:?}");
+    assert!(titles.contains(&"Card song 2"), "{titles:?}");
+}
+
+#[test]
+fn voice_tries_spotify_first_then_the_card() {
+    let mut cfg = config();
+    cfg.my_music = true;
+    let mut core = Core::new(cfg, 0).0;
+    let search = |core: &mut Core| {
+        core.handle(
+            Input::Voice(VoiceUpdate::Command(VoiceCommand::Search {
+                query: "card".into(),
+                kind: SearchKind::Song,
+            })),
+            0,
+        )
+    };
+    let card = Input::Music(MusicUpdate::Search {
+        query: "card".into(),
+        results: SearchResults {
+            tracks: vec![local_track(3)],
+            ..Default::default()
+        },
+    });
+    // The card answers first, but Spotify's answer is waited for.
+    search(&mut core);
+    let fx = core.handle(card.clone(), 10);
+    assert!(fx.is_empty(), "{fx:?}");
+    let fx = core.handle(
+        Input::Library(LibraryUpdate::SearchResults {
+            query: "card".into(),
+            results: SearchResults {
+                tracks: vec![track(1)],
+                ..Default::default()
+            },
+        }),
+        20,
+    );
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::Player(PlayerCommand::Load { context_uri, .. }) if context_uri.starts_with("spotify:")
+    )), "{fx:?}");
+
+    // Spotify finds nothing: the card's song plays.
+    search(&mut core);
+    core.handle(card, 30);
+    let fx = core.handle(
+        Input::Library(LibraryUpdate::SearchResults {
+            query: "card".into(),
+            results: SearchResults::default(),
+        }),
+        40,
+    );
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::Player(PlayerCommand::Load { context_uri, .. }) if context_uri == "local:album:a"
+    )), "{fx:?}");
+}
+
+#[test]
+fn voice_on_a_card_only_player_searches_the_card() {
+    let mut cfg = config();
+    cfg.spotify = false;
+    let mut core = Core::new(cfg, 0).0;
+    core.handle(
+        Input::Voice(VoiceUpdate::Command(VoiceCommand::Search {
+            query: "card".into(),
+            kind: SearchKind::Song,
+        })),
+        0,
+    );
+    let fx = core.handle(
+        Input::Music(MusicUpdate::Search {
+            query: "card".into(),
+            results: SearchResults {
+                tracks: vec![local_track(3)],
+                ..Default::default()
+            },
+        }),
+        10,
+    );
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::Player(PlayerCommand::Load { context_uri, .. }) if context_uri == "local:album:a"
+    )), "{fx:?}");
+    assert!(!core.voice_context().spotify);
 }

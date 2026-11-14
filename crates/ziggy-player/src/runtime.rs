@@ -179,14 +179,38 @@ async fn run(
             inputs.clone(),
         )
     });
-    let (player, library) = if fake {
+    // My music: the folder on the card, and the player for it.
+    // Off on a Spotify player unless turned on; then nothing reads the card.
+    let my_music = config.my_music || !config.spotify;
+    let (music_index, music) = if my_music {
+        crate::music::spawn_music(config.music_dir(), &config.state_dir, inputs.clone())
+    } else {
+        crate::music::spawn_off()
+    };
+    let (local_updates, local_rx) = mpsc::unbounded_channel();
+    let local_player = crate::player::local::spawn(
+        music_index.clone(),
+        crate::player::local::LocalSettings {
+            output: speaker
+                .as_ref()
+                .map(|s| crate::player::soloist::protocol::bluetooth_node(&s.address)),
+            initial_volume: config.initial_volume,
+        },
+        local_updates,
+    );
+    // Spotify's player reports to the router, which passes on what the core should hear.
+    let (spotify_updates, spotify_rx) = mpsc::unbounded_channel();
+    let spotify = if !config.spotify {
+        tracing::info!("card-only player: Spotify is off");
+        None
+    } else if fake {
         let catalog = Arc::new(FakeCatalog::sample());
         let library = spawn_library(
             Arc::new(FakeSource::new(catalog.clone())),
             cache,
             inputs.clone(),
         );
-        (spawn_fake_player(catalog, inputs.clone()), library)
+        Some((spawn_fake_player(catalog, spotify_updates), library))
     } else {
         let http = crate::library::web_api::ReqwestHttp::new()?;
         // Endpoints Spotify told us to leave alone, remembered across restarts.
@@ -225,18 +249,25 @@ async fn run(
                     source.clone(),
                     config.device_name.clone(),
                 )),
-                inputs.clone(),
+                spotify_updates,
             ),
-            None => crate::player::spawn_unavailable(inputs.clone()),
+            None => crate::player::spawn_unavailable(spotify_updates),
         };
         let library = spawn_library(source, cache, inputs.clone());
-        (player, library)
+        Some((player, library))
     };
+    let (spotify_player, library) = match spotify {
+        Some((player, library)) => (Some((player, spotify_rx)), Some(library)),
+        None => (None, None),
+    };
+    let player =
+        crate::player::router::spawn(spotify_player, (local_player, local_rx), inputs.clone());
     spawn_image_loader(
         Arc::new(
             ImageLoader::new(config.images_dir())?
                 .with_books(books_handle.clone())
-                .with_airplay(airplay_covers),
+                .with_airplay(airplay_covers)
+                .with_music(music_index),
         ),
         image_requests,
         images,
@@ -259,6 +290,10 @@ async fn run(
         voice: config.voice_model_dir.is_some(),
         home: home_pages,
         airplay: airplay_available,
+        spotify: config.spotify,
+        my_music,
+        music_share_available: share_available(),
+        music_share_default: config.music_share,
     };
     let history =
         crate::history::spawn_history(config.state_dir.join("history.db"), inputs.clone());
@@ -296,6 +331,7 @@ async fn run(
         fake,
         player,
         library,
+        music,
         history,
         books,
         home,
@@ -338,7 +374,10 @@ struct Outputs {
     /// `--fake`: pretend Sonos rooms instead of scanning the network.
     fake: bool,
     player: UnboundedSender<PlayerCommand>,
-    library: UnboundedSender<LibraryRequest>,
+    /// Spotify's library; None on a card-only player.
+    library: Option<UnboundedSender<LibraryRequest>>,
+    /// The music on the card.
+    music: UnboundedSender<LibraryRequest>,
     history: UnboundedSender<crate::app::HistoryCommand>,
     books: UnboundedSender<crate::app::BooksRequest>,
     /// None when Home Assistant is off.
@@ -358,7 +397,20 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
                 let _ = outputs.player.send(command);
             }
             Effect::Library(request) => {
-                let _ = outputs.library.send(request);
+                if crate::music::wants(&request) {
+                    let _ = outputs.music.send(request);
+                    continue;
+                }
+                // A search looks on the card and on Spotify.
+                if matches!(request, LibraryRequest::Search(_)) {
+                    let _ = outputs.music.send(request.clone());
+                }
+                if let Some(library) = &outputs.library {
+                    let _ = library.send(request);
+                }
+            }
+            Effect::MusicShare(on) => {
+                tokio::spawn(crate::platform::share_music(on));
             }
             Effect::Display(mode) => platform.set_display(mode),
             Effect::Books(request) => {
@@ -445,6 +497,11 @@ fn dispatch(effects: Vec<Effect>, outputs: &Outputs, platform: &crate::platform:
             }
         }
     }
+}
+
+/// The shared music folder can be switched on: Samba is installed on this Pi.
+fn share_available() -> bool {
+    cfg!(target_os = "linux") && std::path::Path::new("/usr/sbin/smbd").is_file()
 }
 
 /// Whether a program is on the PATH.

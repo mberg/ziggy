@@ -76,6 +76,14 @@ pub struct CoreConfig {
     pub home: Vec<crate::home::types::Page>,
     /// The AirPlay receiver can run here.
     pub airplay: bool,
+    /// False on a card-only player.
+    pub spotify: bool,
+    /// My music is on: from Settings, the config, or a card-only player.
+    pub my_music: bool,
+    /// The shared music folder can be switched on here (Samba is installed).
+    pub music_share_available: bool,
+    /// The shared folder is on unless Settings says otherwise (the config's `music_share`).
+    pub music_share_default: bool,
 }
 
 impl CoreConfig {
@@ -145,10 +153,15 @@ const OFFLINE_RETRY_MS: u64 = 30_000;
 
 impl Core {
     pub fn new(cfg: CoreConfig, now_ms: u64) -> (Core, Vec<Effect>) {
+        // Albums is the home screen at power-on; My music on a card-only player.
+        let first = if cfg.spotify {
+            Section::Albums
+        } else {
+            Section::MyMusic
+        };
         let state = AppState {
-            // Albums is the home screen at power-on.
-            screen: Screen::Grid(Section::Albums),
-            section: Section::Albums,
+            screen: Screen::Grid(first),
+            section: first,
             back_stack: Vec::new(),
             sections: Default::default(),
             tracks: Default::default(),
@@ -219,6 +232,12 @@ impl Core {
                 volume: cfg.initial_volume,
                 session: None,
             },
+            spotify: cfg.spotify,
+            my_music: cfg.my_music || !cfg.spotify,
+            music_share: MusicShare {
+                available: cfg.music_share_available,
+                on: cfg.saved.music_share.unwrap_or(cfg.music_share_default),
+            },
         };
         let mut core = Core {
             state,
@@ -226,7 +245,7 @@ impl Core {
             last_activity_ms: now_ms,
             notice_until_ms: 0,
             last_load: None,
-            before_search: Section::Albums,
+            before_search: first,
             next_edit: 0,
             undo: HashMap::new(),
             sleep_volume: None,
@@ -243,12 +262,23 @@ impl Core {
             home_drag: None,
         };
         let mut fx = Vec::new();
-        for section in [Section::Playlists, Section::Albums, Section::Recent] {
-            core.request_section(section, &mut fx);
+        if core.state.my_music {
+            core.request_section(Section::MyMusic, &mut fx);
         }
-        // Liked Songs answers "is this liked?" for every song without asking Spotify.
-        core.request_tracks(LIKED_URI, &mut fx);
-        fx.push(Effect::Library(LibraryRequest::Account));
+        if core.cfg.spotify {
+            for section in [Section::Playlists, Section::Albums, Section::Recent] {
+                core.request_section(section, &mut fx);
+            }
+            // Liked Songs answers "is this liked?" for every song without asking Spotify.
+            core.request_tracks(LIKED_URI, &mut fx);
+            fx.push(Effect::Library(LibraryRequest::Account));
+        }
+        // The shared folder follows Settings, which may differ from what the Pi last had.
+        if core.state.music_share.available {
+            fx.push(Effect::MusicShare(
+                core.state.my_music && core.state.music_share.on,
+            ));
+        }
         fx.push(Effect::Display(DisplayMode::Active));
         (core, fx)
     }
@@ -285,12 +315,28 @@ impl Core {
             Input::Wifi(wifi) => self.on_wifi(wifi, now_ms, &mut fx),
             Input::PairingNeeded(needed) => self.state.pairing_needed = needed,
             Input::AirPlay(update) => self.on_airplay(update, now_ms, &mut fx),
+            Input::Music(MusicUpdate::Search { query, results }) => {
+                let search = &mut self.state.search;
+                if !self.cfg.spotify && search.sent.trim() == query {
+                    // Nothing else is coming for this search.
+                    search.results.loading = false;
+                }
+                search.local = Some((query.clone(), results));
+                if !self.cfg.spotify {
+                    self.voice_search_results(&query, now_ms, &mut fx);
+                }
+            }
             Input::SonosRooms(rooms) => {
                 self.state.device.sonos_rooms = rooms;
                 self.state.device.sonos_scanning = false;
             }
             Input::HistoryRecent(plays) => {
-                if plays.is_empty() && !self.asked_spotify_recent {
+                if plays.is_empty() && !self.cfg.spotify {
+                    // A card-only player has nobody else to ask.
+                    let slot = self.state.sections.entry(Section::Recent).or_default();
+                    slot.data = Some(Arc::new(Vec::new()));
+                    slot.loading = false;
+                } else if plays.is_empty() && !self.asked_spotify_recent {
                     // A new device has no history yet: borrow Spotify's list meanwhile.
                     self.asked_spotify_recent = true;
                     fx.push(Effect::Library(LibraryRequest::Section(Section::Recent)));
@@ -1054,7 +1100,14 @@ impl Core {
             .results
             .data
             .iter()
-            .flat_map(|r| r.tracks.iter());
+            .flat_map(|r| r.tracks.iter())
+            .chain(
+                self.state
+                    .search
+                    .local
+                    .iter()
+                    .flat_map(|(_, r)| r.tracks.iter()),
+            );
         let from_lists = self
             .state
             .tracks
@@ -1123,7 +1176,10 @@ impl Core {
                 self.request_section(section, fx);
             }
             // Artists drill down to their albums.
-            UiAction::OpenCollection(uri) if uri.starts_with("spotify:artist:") => {
+            UiAction::OpenCollection(uri)
+                if uri.starts_with("spotify:artist:")
+                    || uri.starts_with(crate::music::index::ARTIST_PREFIX) =>
+            {
                 self.on_ui(UiAction::OpenArtist(uri), now_ms, fx);
             }
             UiAction::OpenCollection(uri) => {
@@ -1257,6 +1313,28 @@ impl Core {
                 fx.push(Effect::Books(BooksRequest::Detail(id)));
             }
             UiAction::SetAirPlay(enabled) => self.set_airplay(enabled, fx),
+            UiAction::SetMyMusic(on) => {
+                // A card-only player has nothing else, so it stays on.
+                if !self.state.spotify || on == self.state.my_music {
+                    return;
+                }
+                self.state.device.saved.my_music = Some(on);
+                if !on && self.state.music_share.on {
+                    fx.push(Effect::MusicShare(false));
+                }
+                // The music service starts with the player, so this restarts it.
+                self.state.device.restarting = true;
+                fx.push(Effect::ApplySettings(self.state.device.saved.clone()));
+            }
+            UiAction::SetMusicShare(on) => {
+                if !self.state.music_share.available || !self.state.my_music {
+                    return;
+                }
+                self.state.music_share.on = on;
+                self.state.device.saved.music_share = Some(on);
+                fx.push(Effect::SaveSettings(self.state.device.saved.clone()));
+                fx.push(Effect::MusicShare(on));
+            }
             UiAction::SetBooksEnabled(enabled) => {
                 self.state.books.enabled = enabled;
                 self.save_books_settings(fx);
@@ -1662,7 +1740,7 @@ impl Core {
                 }
             }
             LibraryUpdate::SearchFailed { query, reason } => {
-                self.voice_search_failed(&query);
+                self.voice_search_failed(&query, now_ms, fx);
                 if query == self.state.search.sent.trim() {
                     let slot = &mut self.state.search.results;
                     slot.data = None;
@@ -1837,6 +1915,11 @@ impl Core {
         if section == Section::Recent {
             // Recent comes from this device's own play history, not Spotify.
             fx.push(Effect::History(HistoryCommand::LoadRecent));
+        } else if !self.cfg.spotify && section != Section::MyMusic {
+            // No Spotify here: its sections stay empty rather than waiting.
+            let slot = self.state.sections.entry(section).or_default();
+            slot.data = Some(Arc::new(Vec::new()));
+            slot.loading = false;
         } else {
             fx.push(Effect::Library(LibraryRequest::Section(section)));
         }

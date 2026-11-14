@@ -2,6 +2,7 @@
 
 mod devconfig;
 mod install;
+mod music;
 mod remote;
 mod spotify;
 mod store;
@@ -63,6 +64,9 @@ enum Command {
     Logs { host: String },
     /// Sign a Spotify account in on a player again: the library, then pairing from a phone.
     Signin { host: String },
+    /// Copy music files onto a player's SD card, and look after them there.
+    #[command(subcommand)]
+    Music(Music),
     /// Advanced: sign in through the developer app into a folder.
     #[command(hide = true)]
     AuthWeb {
@@ -77,6 +81,35 @@ enum Command {
         #[arg(long)]
         state_dir: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum Music {
+    /// Copy music folders or files onto the player.
+    ///
+    /// A folder keeps its name and layout; files already there are skipped. Copies MP3, M4A,
+    /// AAC and FLAC files, and album covers.
+    Add {
+        /// Folders or files to copy, e.g. "~/Music/Abba".
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
+        /// The player's address, e.g. ziggy-kitchen.local.
+        host: String,
+    },
+    /// List the music on the player, by folder.
+    List { host: String },
+    /// Delete a folder (or a file) from the player's music, e.g. "Abba/Gold".
+    Remove {
+        folder: String,
+        host: String,
+        /// Delete without asking first.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show how much music is on the player and how much room is left.
+    Space { host: String },
+    /// Set or remove a password for the shared music folder.
+    SharePassword { host: String },
 }
 
 #[tokio::main]
@@ -98,10 +131,33 @@ async fn main() -> anyhow::Result<()> {
         Command::Status { host } => wizard::status(&host),
         Command::Logs { host } => wizard::logs(&host),
         Command::Signin { host } => wizard::signin(&host).await,
+        Command::Music(command) => match command {
+            Music::Add { paths, host } => music::add(&paths, &host),
+            Music::List { host } => music::list(&host),
+            Music::Remove { folder, host, yes } => music::remove(&folder, &host, yes),
+            Music::Space { host } => music::space(&host),
+            Music::SharePassword { host } => music::share_password(&host),
+        },
         Command::AuthWeb {
             state_dir,
             client_id,
         } => spotify::auth_web(&state_dir, &client_id).await,
         Command::Probe { state_dir } => spotify::probe(&state_dir).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn music_add_takes_several_paths_then_the_host() {
+        let cli = Cli::try_parse_from(["ziggy", "music", "add", "a", "b c", "den.local"]).unwrap();
+        let Command::Music(Music::Add { paths, host }) = cli.command else {
+            panic!("not music add");
+        };
+        assert_eq!(paths, [PathBuf::from("a"), PathBuf::from("b c")]);
+        assert_eq!(host, "den.local");
+        assert!(Cli::try_parse_from(["ziggy", "music", "add", "den.local"]).is_err());
     }
 }

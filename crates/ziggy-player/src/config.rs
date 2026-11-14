@@ -62,6 +62,27 @@ pub struct Config {
     /// Home Assistant controls on a Home screen; Home is on when this has pages.
     #[serde(default)]
     pub home_assistant: Option<HomeAssistantConfig>,
+    /// False on a card-only player: no Spotify at all, only the music on the card.
+    #[serde(default = "default_true")]
+    pub spotify: bool,
+    /// My music: music files on the card, shown alongside Spotify. Off unless turned on here
+    /// or in Settings; always on for a card-only player.
+    #[serde(default)]
+    pub my_music: bool,
+    /// The folder of music files shown in My music; `/var/lib/ziggy-music` by default.
+    #[serde(default)]
+    pub music_dir: Option<PathBuf>,
+    /// The music folder is shared on the network (Samba), unless Settings says otherwise.
+    #[serde(default)]
+    pub music_share: bool,
+}
+
+/// Where music on the card lives on a Pi; `ziggy setup` makes it, and `ziggy music` and the
+/// shared folder copy into it.
+pub const DEFAULT_MUSIC_DIR: &str = "/var/lib/ziggy-music";
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -130,6 +151,13 @@ fn default_initial_volume() -> u8 {
 }
 
 impl Config {
+    /// The folder My music reads.
+    pub fn music_dir(&self) -> PathBuf {
+        self.music_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_MUSIC_DIR))
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Config> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;

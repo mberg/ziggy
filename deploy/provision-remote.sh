@@ -8,11 +8,14 @@ apt-get install -y --no-install-recommends \
     libasound2t64 libinput10 libudev1 libxkbcommon0 libgbm1 libegl1 libgles2 libdrm2 libfontconfig1 \
     libegl-mesa0 libgl1-mesa-dri \
     bluez pipewire wireplumber libspa-0.2-bluetooth \
-    shairport-sync \
+    shairport-sync samba rsync \
     curl bzip2 ca-certificates
 # AirPlay: the player runs shairport-sync itself when AirPlay is on in Settings. The package's
 # own service would compete with it for the name and the speaker.
 systemctl disable --now shairport-sync.service 2>/dev/null || true
+# The shared music folder: the player starts smbd only while it's on in Settings. nmbd (old
+# Windows network browsing) isn't needed; the share is announced over Bonjour instead.
+systemctl disable --now smbd.service nmbd.service 2>/dev/null || true
 
 # A player set up before the rename to Ziggy: stop its old service, then rename the service
 # user, its home, the data and the config. Nothing is lost.
@@ -33,6 +36,14 @@ fi
 
 id ziggy-player >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin --groups video,input,audio,render,bluetooth ziggy-player
 install -d -m 700 -o ziggy-player -g ziggy-player /var/lib/ziggy /var/lib/ziggy/models
+# Music on the card. The folder belongs to the player, and the ziggy-music group lets the SSH
+# user copy music in with `ziggy music add`. New folders inside keep the group (setgid).
+getent group ziggy-music >/dev/null || groupadd --system ziggy-music
+usermod -aG ziggy-music ziggy-player
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    usermod -aG ziggy-music "$SUDO_USER"
+fi
+install -d -m 2775 -o ziggy-player -g ziggy-music /var/lib/ziggy-music
 
 # Sound: Spotify Soloist plays through PipeWire, which runs in the ziggy-player user's own session,
 # started at boot. BlueALSA would claim Bluetooth speakers first, so it goes. WirePlumber normally

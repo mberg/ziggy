@@ -16,6 +16,8 @@ base64 = "0.22"
 # Voice: the microphone, and the wake word on the device.
 cpal = "0.16"
 sherpa-onnx = "1.13.8"
+# My music: reading and playing music files on the card (MP3, AAC in M4A, FLAC).
+symphonia = { version = "0.5.4", default-features = false, features = ["mp3", "aac", "isomp4", "flac"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }

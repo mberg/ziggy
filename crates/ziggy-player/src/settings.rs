@@ -52,6 +52,12 @@ pub struct Settings {
     /// The player shows up as an AirPlay speaker; off when unset.
     #[serde(default)]
     pub airplay: Option<bool>,
+    /// My music is on; the config's `my_music` when unset.
+    #[serde(default)]
+    pub my_music: Option<bool>,
+    /// The music folder is shared on the network; the config's `music_share` when unset.
+    #[serde(default)]
+    pub music_share: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -83,6 +89,9 @@ impl Settings {
     pub fn apply(&self, config: &mut Config) {
         if let Some(name) = self.device_name.as_ref().filter(|n| !n.trim().is_empty()) {
             config.device_name = name.clone();
+        }
+        if let Some(on) = self.my_music {
+            config.my_music = on;
         }
         match &self.output {
             None | Some(Output::Sonos(_)) => {}
@@ -118,6 +127,8 @@ mod tests {
             theme: Some(2),
             audiobooks: None,
             airplay: Some(true),
+            my_music: Some(true),
+            music_share: Some(false),
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(Settings::load(dir.path()), settings);
@@ -136,6 +147,8 @@ mod tests {
             theme: None,
             audiobooks: None,
             airplay: None,
+            my_music: None,
+            music_share: None,
         }
         .apply(&mut config);
         assert_eq!(config.device_name, "Kitchen");
@@ -156,6 +169,8 @@ mod tests {
             theme: None,
             audiobooks: None,
             airplay: None,
+            my_music: None,
+            music_share: None,
         }
         .apply(&mut config);
         assert_eq!(config.bluetooth_speaker, None);

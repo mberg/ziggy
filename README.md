@@ -7,9 +7,10 @@
 
 # Ziggy Player
 
-A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotify playlists, albums and liked songs, searches Spotify, and does nothing else: no apps, no feeds, no ads.
+A music player with a touchscreen, built on a Raspberry Pi. It plays your Spotify playlists, albums and liked songs, and music files kept on its SD card. It does nothing else: no apps, no feeds, no ads.
 
 - **Spotify:** your library, search, playlist editing and hearting songs, with recently played kept on the player.
+- **My music:** MP3, M4A/AAC and FLAC files on the player's SD card, alongside Spotify or without it. See [My music](#my-music).
 - **Speakers:** the headphone jack, a Bluetooth speaker, or a Sonos room.
 - **AirPlay:** the player can be an AirPlay speaker for an iPhone, iPad or Mac.
 - **Audiobooks:** browse an [Audiobookshelf](https://www.audiobookshelf.org/) server at home.
@@ -29,7 +30,7 @@ The screenshots use a made-up library. To make them again, run `cargo run -p zig
 - A Raspberry Pi 3 A+ or newer, a power supply and a microSD card (16 GB is plenty; 8 GB is the least).
 - A 7" DSI touchscreen: the official Raspberry Pi one, or one like Hosyond's 7" DSI display, which carries the Pi on its back.
 - Speakers or headphones: the Pi's headphone jack, a Bluetooth speaker, or a Sonos system.
-- A Spotify Premium account for each person.
+- A Spotify Premium account for each person, for Spotify. A player can also play only music on its SD card, with no Spotify account.
 - A Mac or Linux computer to run setup from, on the same Wi-Fi as the Pi.
 - Optional: a USB microphone for voice control, and a Google Cloud project or Gemini API key for it.
 
@@ -66,12 +67,12 @@ Setup asks one thing at a time:
 
 1. **The Pi's address**, such as `ziggy-kitchen.local`. It checks it can connect.
 2. **The player's name.** Spotify shows it when you pick where to play.
-3. **Spotify.**
+3. **Spotify.** It asks whether to use Spotify on this player. Answer no for a player that plays only music on its SD card, and setup skips the rest of this step.
    - The first time, it asks for a Spotify Soloist API key, which plays the music on the Pi. Make one at the [Spotify developer dashboard](https://developer.spotify.com/dashboard) by choosing "Spotify Soloist API Key". Setup keeps it on your computer for every player after that.
    - It also walks you through creating a free Spotify developer app, which loads the library. One app serves every player and every person.
    - A browser opens to sign in for the library.
    - Then sign in for playback: on a phone or computer on the same Wi-Fi, open the Spotify app as the person the player is for, tap the devices button and pick the player. The Spotify website can't find a new player, so use the app.
-4. **Extras.** An Audiobookshelf address and voice control, both optional.
+4. **Extras.** An Audiobookshelf address, My music (music files on the card) and whether to share its folder on your network, and voice control, all optional.
 5. **Install.** It prepares the Pi, installs the newest player and copies your settings across. The first time takes a few minutes and restarts the Pi.
 
 When setup finishes, the player is on the screen.
@@ -79,6 +80,7 @@ When setup finishes, the player is on the screen.
 ### 4. On the touchscreen
 
 - **Settings → Speaker** pairs a Bluetooth speaker or picks a Sonos room. Put a Bluetooth speaker in pairing mode first.
+- **Settings → My music** turns My music on or off, and its **Shared folder** shares the music folder on your network. See [My music](#my-music).
 - **Settings → AirPlay** turns the AirPlay speaker on or off. See [AirPlay](#airplay).
 - **Settings → Audiobooks** signs in to Audiobookshelf. Each player can use its own Audiobookshelf user.
 - **Settings → Colours** and **Sleep timer** take effect at once.
@@ -92,10 +94,11 @@ Run these from your computer:
 
 | Command | What it does |
 |---|---|
-| `ziggy config ziggy-kitchen.local` | Change settings from a menu: the name, volume, screen timeouts, Audiobookshelf, Home Assistant and voice. Saving restarts the player. |
+| `ziggy config ziggy-kitchen.local` | Change settings from a menu: the name, volume, screen timeouts, Audiobookshelf, Home Assistant, voice, My music and the shared music folder. Saving restarts the player. |
 | `ziggy update ziggy-kitchen.local` | Install the newest player and restart it. |
 | `ziggy status ziggy-kitchen.local` | Check the player is running, and which version it is. |
 | `ziggy logs ziggy-kitchen.local` | Watch what the player is doing, for when something's wrong. |
+| `ziggy music add ~/Music/Abba ziggy-kitchen.local` | Copy music folders or files onto the player. `ziggy music list`, `remove` and `space` show what's there, delete a folder and show the room left. See [My music](#my-music). |
 | `ziggy signin ziggy-kitchen.local` | Sign a different Spotify account in on that player: the library in a browser, then playback by picking the player in the Spotify app. |
 
 `ziggy setup` can be run again on the same Pi at any time. It keeps the Spotify sign-in unless you choose to sign in again.
@@ -130,6 +133,35 @@ The microphone button in Search does the same without the wake word.
 You can ask to play anything in your library or on Spotify, pause, skip, change the volume, set the sleep timer, heart the song, save its album, or add it to one of your playlists.
 
 To change the wake word or its sensitivity, run `ziggy config`.
+
+## My music
+
+A player can also play music files kept on its own SD card: MP3, M4A/AAC and FLAC. They show under My music in the rail as albums, read from the files' tags; an album leads to its artist's other albums. On a player with Spotify, My music is off until you turn it on: answer yes in `ziggy setup`, turn it on in Settings → My music on the touchscreen, or use `ziggy config`. A player without Spotify always has it. Playing from My music pauses Spotify, and playing from Spotify stops My music, the same as AirPlay. A 16 GB card has room for about 2,000 songs.
+
+There are three ways to get music onto the player. All three copy into the same folder on the Pi, `/var/lib/ziggy-music`. Any folder layout works; `Artist/Album/01 Song.mp3` is the tidiest. A player set up before My music gets the folder with `ziggy update`.
+
+- **The `ziggy music` command**, from your computer:
+
+  ```bash
+  ziggy music add ~/Music/Abba ~/Music/Moana ziggy-kitchen.local
+  ziggy music list ziggy-kitchen.local
+  ziggy music remove "Abba/Gold" ziggy-kitchen.local
+  ziggy music space ziggy-kitchen.local
+  ```
+
+  `add` copies each folder by its name, with its layout, and skips files already on the player. It checks the free space first. It copies music and covers (`cover.jpg`, `folder.jpg` or `front.jpg`) and lists the files it skipped. It needs `rsync`, which Macs and most Linux computers have.
+- **The shared folder.** The player can share its music folder on your network, as **Music**. On a Mac it shows in Finder under Network, by the player's hostname, such as `ziggy-kitchen`. On Windows, type `\\ziggy-kitchen.local\Music` in File Explorer; Windows 11 usually refuses a shared folder without a password, so set one (below). Drag music in. It's off by default, because anyone on your Wi-Fi can add or delete music while it's on. Turn it on in Settings → My music → Shared folder, or with `ziggy config`. To make it ask for a password, run `ziggy music share-password ziggy-kitchen.local`; then connect as `ziggy` with that password.
+- **An agent skill.** `skills/ziggy-music` tells an agent such as Claude Code how to copy the music you name with `ziggy music`. To install it for Claude Code, copy the folder into `~/.claude/skills`:
+
+  ```bash
+  cp -r skills/ziggy-music ~/.claude/skills/
+  ```
+
+  Then ask, for example, "put the Abba albums on ziggy-kitchen".
+
+**Players without Spotify.** Answer no to Spotify in `ziggy setup`, and the player plays only music on its card. It needs no Spotify account. To add Spotify later, run `ziggy setup` again and answer yes; the music on the card stays.
+
+A Sonos room can't play music from the card yet. With Sonos as the speaker, My music plays through the player's own speaker.
 
 ## Home Assistant
 

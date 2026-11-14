@@ -10,6 +10,7 @@ pub mod home;
 pub mod images;
 pub mod library;
 pub mod model;
+pub mod music;
 pub mod platform;
 pub mod player;
 pub mod runtime;

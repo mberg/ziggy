@@ -303,6 +303,10 @@ pub fn wire_callbacks(window: &AppWindow, inputs: UnboundedSender<Input>) {
     let s = send.clone();
     window.on_set_airplay(move |b| s(UiAction::SetAirPlay(b)));
     let s = send.clone();
+    window.on_set_my_music(move |b| s(UiAction::SetMyMusic(b)));
+    let s = send.clone();
+    window.on_set_music_share(move |b| s(UiAction::SetMusicShare(b)));
+    let s = send.clone();
     window.on_edit_books_server(move || s(UiAction::EditBooksServer));
     let s = send.clone();
     window.on_books_sign_in(move || s(UiAction::BooksSignIn));
@@ -394,6 +398,7 @@ impl Bridge {
             .collect();
         sync(&self.tiles, tiles);
         w.set_grid_state(load_state(v.grid_status));
+        w.set_grid_empty_text(v.grid_empty_text.as_str().into());
 
         if let Some(detail) = &v.detail {
             w.set_detail(tile_data(&mut self.images, &detail.header));
@@ -423,6 +428,7 @@ impl Bridge {
         w.set_shuffle(v.now.shuffle);
         w.set_repeat(v.now.repeat.index());
         w.set_now_airplay(v.now.airplay);
+        w.set_now_local(v.now.local);
         w.set_banner_at_bottom(v.banner_at_bottom);
         w.set_banner(v.banner.unwrap_or_default().into());
         w.set_voice_status(v.voice_status.as_str().into());
@@ -453,6 +459,8 @@ impl Bridge {
         w.set_books_state(load_state(v.books.status));
         w.set_books_message(v.books.message.as_str().into());
         w.set_home_enabled(v.home_enabled);
+        w.set_my_music_enabled(v.my_music_enabled);
+        w.set_spotify(v.spotify);
         w.set_home_page(v.home.page as i32);
         w.set_home_banner(v.home.banner.as_str().into());
         sync(
@@ -517,6 +525,8 @@ impl Bridge {
         w.set_books_settings_message(s.books_message.as_str().into());
         w.set_airplay_available(s.airplay_available);
         w.set_airplay_enabled(s.airplay_enabled);
+        w.set_music_share_available(s.music_share_available);
+        w.set_music_share_on(s.music_share_on);
         w.set_recent_songs(v.recent_songs);
         if v.recent_songs && v.recent_chips {
             let now = chrono::Local::now();

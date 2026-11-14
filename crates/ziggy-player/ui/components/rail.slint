@@ -45,6 +45,10 @@ export component Rail inherits Rectangle {
     in property <bool> books;
     // Home shows only when Home Assistant pages are set up.
     in property <bool> home;
+    // My music shows when there's music on the card, or on a card-only player.
+    in property <bool> my-music;
+    // Spotify's sections hide on a card-only player.
+    in property <bool> spotify: true;
     callback select(int);
     width: Theme.rail-width;
     background: Theme.surface;
@@ -59,10 +63,12 @@ export component Rail inherits Rectangle {
             // Search first, above Playlists.
             RailItem { icon: @image-url("../icons/search.svg"); label: "Search"; active: root.selected == 4; clicked => { root.select(4); } }
             if root.home: RailItem { icon: @image-url("../icons/home.svg"); label: "Home"; active: root.selected == 8; clicked => { root.select(8); } }
-            RailItem { icon: @image-url("../icons/playlists.svg"); label: "Playlists"; active: root.selected == 0; clicked => { root.select(0); } }
-            RailItem { icon: @image-url("../icons/album.svg"); label: "Albums"; active: root.selected == 1; clicked => { root.select(1); } }
-            RailItem { icon: @image-url("../icons/artist.svg"); label: "Artists"; active: root.selected == 2; clicked => { root.select(2); } }
-            RailItem { icon: @image-url("../icons/heart.svg"); label: "Liked"; active: root.selected == 3; clicked => { root.select(3); } }
+            if !root.spotify && root.my-music: RailItem { icon: @image-url("../icons/note.svg"); label: "My music"; active: root.selected == 9; clicked => { root.select(9); } }
+            if root.spotify: RailItem { icon: @image-url("../icons/playlists.svg"); label: "Playlists"; active: root.selected == 0; clicked => { root.select(0); } }
+            if root.spotify: RailItem { icon: @image-url("../icons/album.svg"); label: "Albums"; active: root.selected == 1; clicked => { root.select(1); } }
+            if root.spotify: RailItem { icon: @image-url("../icons/artist.svg"); label: "Artists"; active: root.selected == 2; clicked => { root.select(2); } }
+            if root.spotify: RailItem { icon: @image-url("../icons/heart.svg"); label: "Liked"; active: root.selected == 3; clicked => { root.select(3); } }
+            if root.spotify && root.my-music: RailItem { icon: @image-url("../icons/note.svg"); label: "My music"; active: root.selected == 9; clicked => { root.select(9); } }
             if root.books: RailItem { icon: @image-url("../icons/book.svg"); label: "Books"; active: root.selected == 7; clicked => { root.select(7); } }
             RailItem { icon: @image-url("../icons/history.svg"); label: "Recent"; active: root.selected == 5; clicked => { root.select(5); } }
             // Settings: small, at the end of the list.

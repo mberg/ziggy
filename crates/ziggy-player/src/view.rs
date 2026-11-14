@@ -7,6 +7,7 @@ use crate::app::{
 };
 use crate::library::matching::matches;
 use crate::model::{Collection, LIKED_URI, Repeat, Section, Track, liked_collection};
+use crate::music::index::{ALBUM_PREFIX, is_local};
 
 /// Library matches shown per kind before the catalog results.
 const LIBRARY_MATCHES: usize = 5;
@@ -585,6 +586,13 @@ pub struct SettingsView {
     /// AirPlay can run here, so Settings offers it.
     pub airplay_available: bool,
     pub airplay_enabled: bool,
+    /// My music is on.
+    pub my_music: bool,
+    /// The shared music folder can be switched here, and whether it's on.
+    pub music_share_available: bool,
+    pub music_share_on: bool,
+    /// False on a card-only player: no Spotify account card.
+    pub spotify: bool,
 }
 
 /// Below this, music can stall and the connection can drop.
@@ -626,6 +634,8 @@ pub struct NowView {
     pub repeat: Repeat,
     /// A phone or computer plays here over AirPlay: no seeking, shuffle or repeat.
     pub airplay: bool,
+    /// The song is from the card: no liking or adding it to a playlist.
+    pub local: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -635,6 +645,8 @@ pub struct View {
     pub grid_title: String,
     pub grid: Vec<TileView>,
     pub grid_status: LoadStatus,
+    /// What an empty grid says.
+    pub grid_empty_text: String,
     pub detail: Option<DetailView>,
     pub now: NowView,
     pub mini_visible: bool,
@@ -670,6 +682,10 @@ pub struct View {
     pub book: Option<BookView>,
     /// The rail shows Home.
     pub home_enabled: bool,
+    /// The rail shows My music: it's turned on, or there's no Spotify.
+    pub my_music_enabled: bool,
+    /// The rail shows Spotify's sections.
+    pub spotify: bool,
     pub home: HomeView,
     /// Playlists shows a button to make a new, empty playlist.
     pub can_create_playlist: bool,
@@ -724,7 +740,25 @@ pub fn build(state: &AppState) -> View {
         section: state.section,
         grid_title: grid_section.title().to_string(),
         grid,
-        grid_status: status(grid_slot),
+        grid_status: match grid_slot.and_then(|slot| slot.data.as_ref()) {
+            // An empty My music says how to add music; other sections are never empty.
+            Some(items) if items.is_empty() && grid_section == Section::MyMusic => {
+                LoadStatus::Empty
+            }
+            _ => status(grid_slot),
+        },
+        grid_empty_text: if grid_section == Section::MyMusic {
+            if state.music_share.on {
+                "No music on this player yet. Copy some into its shared Music folder, or use ziggy music add from your computer."
+            } else {
+                "No music on this player yet. Add some with ziggy music add from your computer, or turn on the shared folder in Settings."
+            }
+            .into()
+        } else {
+            String::new()
+        },
+        my_music_enabled: state.my_music,
+        spotify: state.spotify,
         detail: detail(state),
         now: now(state),
         mini_visible: has_playback && screen != ScreenView::NowPlaying && !keyboard,
@@ -911,6 +945,10 @@ fn settings(state: &AppState) -> SettingsView {
         powering_off: d.powering_off,
         airplay_available: state.airplay.available,
         airplay_enabled: state.airplay.enabled,
+        my_music: state.my_music,
+        music_share_available: state.music_share.available,
+        music_share_on: state.music_share.on,
+        spotify: state.spotify,
         wifi_weak: match &d.wifi {
             None => false,
             Some(crate::app::WifiStatus::Disconnected) => true,
@@ -1025,6 +1063,26 @@ fn search(state: &AppState) -> SearchView {
     if has_library {
         rows.push(header_row("In your library"));
         rows.extend(library);
+    }
+    let on_card: Vec<SearchRowView> = s
+        .local
+        .as_ref()
+        .filter(|(q, _)| !query.is_empty() && q.trim() == query)
+        .map(|(_, found)| {
+            found
+                .tracks
+                .iter()
+                .map(song_row)
+                .chain(found.artists.iter().map(|c| row(RowKind::Artist, c)))
+                .chain(found.albums.iter().map(|c| row(RowKind::Album, c)))
+                .filter(|r| shows(s.filter, r.kind))
+                .collect()
+        })
+        .unwrap_or_default();
+    let has_library = has_library || !on_card.is_empty();
+    if !on_card.is_empty() {
+        rows.push(header_row("On this player"));
+        rows.extend(on_card);
     }
     // Catalog results count only when they belong to what is typed now.
     let current = !query.is_empty() && s.sent.trim() == query;
@@ -1222,7 +1280,7 @@ fn detail(state: &AppState) -> Option<DetailView> {
         editing: editable && state.editing.as_deref() == Some(uri.as_str()),
         editable,
         summary,
-        artist_link: uri.starts_with("spotify:album:")
+        artist_link: (uri.starts_with("spotify:album:") || uri.starts_with(ALBUM_PREFIX))
             && find_collection(state, &uri).is_some_and(|c| !c.subtitle.is_empty()),
         saveable: uri.starts_with("spotify:album:"),
         saved: state.liked.get(&uri).copied().unwrap_or_else(|| {
@@ -1230,7 +1288,9 @@ fn detail(state: &AppState) -> Option<DetailView> {
                 .iter()
                 .any(|a| a.uri == uri)
         }),
-        can_add: !uri.starts_with("spotify:playlist:") && !uri.starts_with("ziggy:new:"),
+        can_add: !uri.starts_with("spotify:playlist:")
+            && !uri.starts_with("ziggy:new:")
+            && !is_local(&uri),
         header,
         status: status(slot),
         tracks,
@@ -1289,6 +1349,7 @@ fn now(state: &AppState) -> NowView {
             shuffle: false,
             repeat: Repeat::Off,
             airplay: true,
+            local: false,
         };
     }
     let pb = &state.playback;
@@ -1309,8 +1370,15 @@ fn now(state: &AppState) -> NowView {
     } else {
         0.0
     };
+    let local = pb.track.as_ref().is_some_and(|t| is_local(&t.uri));
     NowView {
-        track_uri: pb.track.as_ref().map(|t| t.uri.clone()).unwrap_or_default(),
+        // Liking and adding are Spotify's, so a song from the card has neither.
+        track_uri: pb
+            .track
+            .as_ref()
+            .filter(|_| !local)
+            .map(|t| t.uri.clone())
+            .unwrap_or_default(),
         has_artist: pb.track.as_ref().is_some_and(|t| t.artist_uri.is_some()),
         sleep_left,
         liked: pb
@@ -1331,6 +1399,7 @@ fn now(state: &AppState) -> NowView {
         shuffle: pb.shuffle,
         repeat: pb.repeat,
         airplay: false,
+        local,
     }
 }
 

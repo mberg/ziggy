@@ -3,3 +3,4 @@
 /secrets
 /.playwright-mcp
 /.wrangler
+.DS_Store

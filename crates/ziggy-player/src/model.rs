@@ -18,6 +18,8 @@ pub enum Section {
     Books,
     /// Home Assistant controls, when set up.
     Home,
+    /// Music files on the player's own card.
+    MyMusic,
 }
 
 impl Section {
@@ -32,6 +34,7 @@ impl Section {
             Section::Settings => 6,
             Section::Books => 7,
             Section::Home => 8,
+            Section::MyMusic => 9,
         }
     }
 
@@ -45,6 +48,7 @@ impl Section {
             6 => Section::Settings,
             7 => Section::Books,
             8 => Section::Home,
+            9 => Section::MyMusic,
             _ => Section::Playlists,
         }
     }
@@ -60,6 +64,7 @@ impl Section {
             Section::Settings => "Settings",
             Section::Books => "Books",
             Section::Home => "Home",
+            Section::MyMusic => "My music",
         }
     }
 
@@ -74,6 +79,7 @@ impl Section {
             Section::Settings => "section-settings",
             Section::Books => "section-books",
             Section::Home => "section-home",
+            Section::MyMusic => "section-my-music",
         }
     }
 }
